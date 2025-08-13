@@ -5,5 +5,13 @@ rust-version = "1.85"
 edition = "2021"
 license = "Apache-2.0"
 
+[lib]
+bench = false
+name = "tket2dataflow"
+
 [dependencies]
-tket2 = "0.12.3"
+hugr = "0.22.0"
+hugr-core = "0.22.0"
+itertools = "0.14.0"
+petgraph = { version = ">= 0.8.1, < 0.9", default-features = false }
+tket = "0.13.1"
