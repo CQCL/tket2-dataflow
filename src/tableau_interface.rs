@@ -1,7 +1,7 @@
 use tket2::passes::fast_todd::bit_vector::BitVector;
 
 #[derive(Debug, Clone)]
-pub strict ChoiTableau {
+pub struct ChoiTableau {
     // Total number of qubits in the system; each may represent an input, output, or intermediary point in the original circuit, but are uniformly considered outputs of the Choi-state considered here
     pub nb_qubits: usize,
 

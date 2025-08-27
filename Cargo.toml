@@ -10,6 +10,7 @@ bench = false
 name = "tket2dataflow"
 
 [dependencies]
+bimap = "0.6.3"
 hugr = "0.22.0"
 hugr-core = "0.22.0"
 itertools = "0.14.0"
