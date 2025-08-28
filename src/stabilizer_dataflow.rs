@@ -5,16 +5,15 @@ use std::hash::Hash;
 use bimap::BiHashMap;
 use hugr::ops::DataflowOpTrait;
 use hugr::PortIndex;
-use hugr_core::hugr::internal::{self, PortgraphNodeMap};
+use hugr_core::hugr::internal::PortgraphNodeMap;
 use hugr_core::{HugrView, IncomingPort, OutgoingPort};
 use hugr_core::ops::OpType;
 use hugr::extension::prelude::qb_t;
 use itertools::{chain, Itertools};
-use petgraph::visit::{self as pv, Data};
+use petgraph::visit as pv;
 use tket::hugr::extension::simple_op::MakeExtensionOp;
 use tket::TketOp;
 use crate::bit_vector::BitVector;
-use crate::pauli_product::PauliProduct;
 use crate::symplectic_tableau::{PauliXZ, SymplecticTableau};
 
 /// Sets behaviour for function calls in dataflow analysis
@@ -57,13 +56,6 @@ pub struct StabilizerDataflow<H: HugrView> {
     /// - A frontier that moves forward through the program (eventually becoming the output qubits and being removed from here)
     /// - For any internal non-Clifford (or opaque) node, we use columns for each input and output qubit separately; for nodes with stabilizers across them (e.g. Rz has Z_i Z_o), we impose these via projections on the tableau rather than reducing the number of qubits used as this allows every node kind to be handled identically and preventing more tableau management from column elimination
     /// - For any hierarchical node, we use additional columns for each input and output port within their internal representation that we compose to "internal" columns here by projections on the tableau, again so we don't fuss with column elimination
-    // in_cols: BiHashMap<OutgoingPort, usize>,
-    // out_cols: BiHashMap<IncomingPort, usize>,
-    // frontier_cols: BiHashMap<(H::Node, IncomingPort), usize>,
-    // internal_in_cols: BiHashMap<(H::Node, IncomingPort), usize>,
-    // internal_out_cols: BiHashMap<(H::Node, OutgoingPort), usize>,
-    // nested_in_cols: BiHashMap<(H::Node, OutgoingPort), usize>,
-    // nested_out_cols: BiHashMap<(H::Node, IncomingPort), usize>,
     q_index_map: BiHashMap<DataflowPoint<H::Node>, usize>,
 
     // For any control-flow region or hierarchical node, store the analysis for its internal calculations
@@ -72,17 +64,13 @@ pub struct StabilizerDataflow<H: HugrView> {
 
 impl<H: HugrView> StabilizerDataflow<H> {
     fn new(hugr: &H, parent: H::Node) -> Self {
-        // let mut in_cols: BiHashMap<OutgoingPort, usize> = BiHashMap::default();
-        // let mut frontier_cols: BiHashMap<(H::Node, IncomingPort), usize> = BiHashMap::default();
         let mut q_ind_map: BiHashMap<DataflowPoint<H::Node>, usize> = BiHashMap::default();
         let mut n_in_qubits = 0;
         let inp = hugr.children(parent).filter(|n| matches!(hugr.get_optype(*n), OpType::Input(_))).exactly_one().ok().unwrap();
         for (out, out_type) in hugr.out_value_types(inp) {
             if out_type == qb_t() {
-                // in_cols.insert(out, 2*n_in_qubits);
                 q_ind_map.insert(DataflowPoint::Input(out), 2*n_in_qubits);
                 let (next, next_p) = hugr.single_linked_input(inp, out).unwrap();
-                // frontier_cols.insert((next, next_p), 2*n_in_qubits + 1);
                 q_ind_map.insert(DataflowPoint::Frontier(next, next_p), 2*n_in_qubits + 1);
                 n_in_qubits = n_in_qubits + 1;
             }
@@ -100,13 +88,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
         Self{
             tab: tab,
-            // in_cols: in_cols,
-            // out_cols: BiHashMap::default(),
-            // frontier_cols: frontier_cols,
-            // internal_in_cols: BiHashMap::default(),
-            // internal_out_cols: BiHashMap::default(),
-            // nested_in_cols: BiHashMap::default(),
-            // nested_out_cols: BiHashMap::default(),
             q_index_map: q_ind_map,
             nested_analysis: HashMap::default(),
         }
@@ -115,12 +96,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
     fn remove_non_io_qubits(&mut self) {
         // Project out non-IO columns
         let non_ios: Vec<usize> = self.q_index_map.iter().filter(|(dfp, _)| matches!(dfp, DataflowPoint::Input(_)) || matches!(dfp, DataflowPoint::Output(_))).map(|(_, q)| *q).collect_vec();
-        // let non_ios = chain!(
-        //     self.internal_in_cols.right_values(),
-        //     self.internal_out_cols.right_values(),
-        //     self.nested_in_cols.right_values(),
-        //     self.nested_out_cols.right_values(),
-        // );
         let project_cols = chain!(
             non_ios.iter().map(|i| (*i, PauliXZ::X)),
             non_ios.iter().map(|i| (*i, PauliXZ::Z)),
@@ -140,28 +115,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
                     self.q_index_map.remove_by_right(&i);
                 }
             }
-            // if moved_qb.is_some() {
-            //     let removed_res: Option<(OutgoingPort, usize)> = self.in_cols.remove_by_right(&moved_qb.unwrap());
-            //     match removed_res {
-            //         Some((port, _)) => {
-            //             self.in_cols.insert(port, *i);
-            //         }
-            //         None => {
-            //             let removed_res = self.out_cols.remove_by_right(&moved_qb.unwrap());
-            //             match removed_res {
-            //                 Some((port, _)) => {
-            //                     self.out_cols.insert(port, *i);
-            //                 }
-            //                 _ => {}
-            //             }
-            //         }
-            //     }
-            // }
         }
-        // self.internal_in_cols.clear();
-        // self.internal_out_cols.clear();
-        // self.nested_in_cols.clear();
-        // self.nested_out_cols.clear();
     }
 
     pub fn run_dfg(hugr: &H, parent: H::Node, fun_op: &FunctionOpacity) -> StabilizerDataflow<H> {
@@ -215,7 +169,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 }
                 OpType::Output(_) => {
                     // Frontier finished, move it to out_cols
-                    // let to_move: Vec<(DataflowPoint<H::Node>, usize)> = analysis.q_index_map.iter().filter(|(dfp, _)| matches!(dfp, DataflowPoint::Frontier(_, _))).map(|(dfp, q)| (dfp.clone(), *q)).collect_vec();
                     let to_move: Vec<(DataflowPoint<H::Node>, usize)> = analysis.q_index_map.iter().filter(|(dfp, _)| matches!(dfp, DataflowPoint::Frontier(_, _))).map(|(dfp, q)| (dfp.clone(), *q)).collect_vec();
                     for (dfp, q) in to_move {
                         if let DataflowPoint::Frontier(_node, port) = dfp {
@@ -223,10 +176,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                             analysis.q_index_map.insert(DataflowPoint::Output(port), q);
                         }
                     }
-                    // for ((_, port), col) in analysis.frontier_cols.iter() {
-                    //     analysis.out_cols.insert(*port, *col);
-                    // }
-                    // analysis.frontier_cols = BiHashMap::default();
                 }
                 _ => {
                     analysis.apply_opaque(hugr, node)
@@ -241,20 +190,16 @@ impl<H: HugrView> StabilizerDataflow<H> {
         let cond = hugr.get_optype(node).as_conditional().unwrap();
         let sig = cond.signature();
         // Determins consistent column indexing for inputs and outputs
-        // let mut unified_in_cols : BiHashMap<OutgoingPort, usize> = BiHashMap::default();
         let mut unified_q_index : BiHashMap<DataflowPoint<H::Node>, usize> = BiHashMap::default();
         let mut n_unified_qbs = 0;
         for in_port in sig.input_ports() {
             if *sig.in_port_type(in_port).unwrap() == qb_t() {
-                // unified_in_cols.insert(OutgoingPort::from(in_port.index()), n_unified_qbs);
                 unified_q_index.insert(DataflowPoint::Input(OutgoingPort::from(in_port.index())), n_unified_qbs);
                 n_unified_qbs = n_unified_qbs + 1;
             }
         }
-        // let mut unified_out_cols : BiHashMap<IncomingPort, usize> = BiHashMap::default();
         for out_port in sig.output_ports() {
             if *sig.out_port_type(out_port).unwrap() == qb_t() {
-                // unified_out_cols.insert(IncomingPort::from(out_port.index()), n_unified_qbs);
                 unified_q_index.insert(DataflowPoint::Output(IncomingPort::from(out_port.index())), n_unified_qbs);
                 n_unified_qbs = n_unified_qbs + 1;
             }
@@ -275,13 +220,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                     _ => { true }
                 }
             }).map(|(_, q)| *q).collect_vec();
-            // let non_ios = chain!(
-            //     analysis.in_cols.right_values().filter(|i| **i >= cond_len),
-            //     analysis.internal_in_cols.right_values(),
-            //     analysis.internal_out_cols.right_values(),
-            //     analysis.nested_in_cols.right_values(),
-            //     analysis.nested_out_cols.right_values(),
-            // );
             let project_cols: Vec<(usize, PauliXZ)> = chain!(
                 non_ios.iter().map(|i| (*i, PauliXZ::X)),
                 non_ios.iter().map(|i| (*i, PauliXZ::Z)),
@@ -292,16 +230,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
             for i in 0..projected_tab.nb_stabs {
                 let mut z = BitVector::new(n_unified_qbs);
                 let mut x = BitVector::new(n_unified_qbs);
-                // for (port, col) in &unified_in_cols {
-                //     let old_col = analysis.in_cols.get_by_left(&OutgoingPort::from(port.index() + cond_len - 1)).unwrap();
-                //     if projected_tab.z[i].get(*old_col) { z.xor_bit(*col); }
-                //     if projected_tab.x[i].get(*old_col) { x.xor_bit(*col); }
-                // }
-                // for (port, col) in &unified_out_cols {
-                //     let old_col = analysis.out_cols.get_by_left(&port).unwrap();
-                //     if projected_tab.z[i].get(*old_col) { z.xor_bit(*col); }
-                //     if projected_tab.x[i].get(*old_col) { x.xor_bit(*col); }
-                // }
                 for (dfp, col) in &unified_q_index {
                     match dfp {
                         DataflowPoint::Input(port) => {
@@ -329,13 +257,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 None => {
                     summary = Some(StabilizerDataflow {
                         tab: unified_order_tab,
-                        // in_cols: unified_in_cols.clone(),
-                        // out_cols: unified_out_cols.clone(),
-                        // frontier_cols: BiHashMap::default(),
-                        // internal_in_cols: BiHashMap::default(),
-                        // internal_out_cols: BiHashMap::default(),
-                        // nested_in_cols: BiHashMap::default(),
-                        // nested_out_cols: BiHashMap::default(),
                         q_index_map: unified_q_index.clone(),
                         nested_analysis: HashMap::default(),
                     });
@@ -351,13 +272,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
         let child_analysis = StabilizerDataflow::run_dfg(hugr, child_node, fun_op);
         let mut analysis = StabilizerDataflow{
             tab: SymplecticTableau::new(0),
-            // in_cols: BiHashMap::default(),
-            // out_cols: BiHashMap::default(),
-            // frontier_cols: BiHashMap::default(),
-            // internal_in_cols: BiHashMap::default(),
-            // internal_out_cols: BiHashMap::default(),
-            // nested_in_cols: BiHashMap::default(),
-            // nested_out_cols: BiHashMap::default(),
             q_index_map: BiHashMap::default(),
             nested_analysis: HashMap::default()
         };
@@ -367,7 +281,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
         for (out_port, out_type) in tl.just_outputs.iter().enumerate() {
             if *out_type == qb_t() {
                 let new_col = analysis.tab.add_qubits(1);
-                // analysis.out_cols.insert(IncomingPort::from(out_port), new_col);
                 analysis.q_index_map.insert(DataflowPoint::Output(IncomingPort::from(out_port)), new_col);
             }
         }
@@ -375,10 +288,8 @@ impl<H: HugrView> StabilizerDataflow<H> {
         for (port_index, port_type) in tl.rest.iter().enumerate() {
             if *port_type == qb_t() {
                 let in_col = analysis.tab.add_qubits(2);
-                // analysis.in_cols.insert(OutgoingPort::from(port_index + 1), in_col);
                 analysis.q_index_map.insert(DataflowPoint::Input(OutgoingPort::from(port_index + 1)), in_col);
                 let out_col = in_col + 1;
-                // analysis.out_cols.insert(IncomingPort::from(port_index + tl.just_outputs.len()), out_col);
                 analysis.q_index_map.insert(DataflowPoint::Output(IncomingPort::from(port_index + tl.just_outputs.len())), out_col);
                 // Add rows for identity in_col--out_col
                 let mut ii = BitVector::new(analysis.tab.nb_qubits);
@@ -441,58 +352,42 @@ impl<H: HugrView> StabilizerDataflow<H> {
     fn apply_quantum_gate(&mut self, hugr : &H, node: H::Node, op: TketOp) {
         match op {
             TketOp::H => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_h(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::CX => {
-                // let (_, col0) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
-                // let (_, col1) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(1))).unwrap();
                 let (_, col0) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let (_, col1) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1))).unwrap();
                 self.tab.append_cx(col0, col1);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col0);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap(), col1);
                 let (next_node0, next_port0) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node0, next_port0), col0);
                 let (next_node1, next_port1) = hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node1, next_port1), col1);
             }
             TketOp::CY => {
-                // let (_, col0) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
-                // let (_, col1) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(1))).unwrap();
                 let (_, col0) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let (_, col1) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1))).unwrap();
                 self.tab.append_s(col1);
                 self.tab.append_z(col1);
                 self.tab.append_cx(col0, col1);
                 self.tab.append_s(col1);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col0);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap(), col1);
                 let (next_node0, next_port0) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node0, next_port0), col0);
                 let (next_node1, next_port1) = hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node1, next_port1), col1);
             }
             TketOp::CZ => {
-                // let (_, col0) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
-                // let (_, col1) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(1))).unwrap();
                 let (_, col0) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let (_, col1) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1))).unwrap();
                 self.tab.append_cz(col0, col1);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col0);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap(), col1);
                 let (next_node0, next_port0) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node0, next_port0), col0);
                 let (next_node1, next_port1) = hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node1, next_port1), col1);
             }
             TketOp::CRz => {
-                // let (_, col_in0) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
-                // let (_, col_in1) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(1))).unwrap();
                 let (_, col_in0) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in1) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1))).unwrap();
                 let col_out0: usize = self.tab.add_qubits(4);
@@ -521,23 +416,16 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 self.tab.project_commuting_with(&in_out_1, &BitVector::new(self.tab.nb_qubits));
                 self.tab.add_stab(in_out_0, BitVector::new(self.tab.nb_qubits), false);
                 self.tab.add_stab(in_out_1, BitVector::new(self.tab.nb_qubits), false);
-                // self.internal_in_cols.insert((node, IncomingPort::from(0)), col_in0);
-                // self.internal_in_cols.insert((node, IncomingPort::from(1)), col_in1);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(0)), col_out0);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(1)), col_out1);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(0)), col_in0);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(1)), col_in1);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(0)), col_out0);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(1)), col_out1);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_front0);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap(), col_front1);
                 let (next_node0, next_port0) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node0, next_port0), col_front0);
                 let (next_node1, next_port1) = hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node1, next_port1), col_front1);
             }
             TketOp::T | TketOp::Tdg | TketOp::Rz | TketOp::Measure => {
-                // let (_, col_in) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let col_out: usize = self.tab.add_qubits(2);
                 let col_front: usize = col_out + 1;
@@ -553,58 +441,44 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 in_out.xor_bit(col_out);
                 self.tab.project_commuting_with(&in_out, &BitVector::new(self.tab.nb_qubits));
                 self.tab.add_stab(in_out, BitVector::new(self.tab.nb_qubits), false);
-                // self.internal_in_cols.insert((node, IncomingPort::from(0)), col_in);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(0)), col_out);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(0)), col_in);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(0)), col_out);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_front);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col_front);
             }
             TketOp::S => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_s(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::Sdg => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_s(col);
                 self.tab.append_z(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::X => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_x(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::Y => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_x(col);
                 self.tab.append_z(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::Z => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_z(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::Rx => {
-                // let (_, col_in) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let col_out: usize = self.tab.add_qubits(2);
                 let col_front: usize = col_out + 1;
@@ -620,16 +494,12 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 in_out.xor_bit(col_out);
                 self.tab.project_commuting_with(&BitVector::new(self.tab.nb_qubits), &in_out);
                 self.tab.add_stab(BitVector::new(self.tab.nb_qubits), in_out, false);
-                // self.internal_in_cols.insert((node, IncomingPort::from(0)), col_in);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(0)), col_out);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(0)), col_in);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(0)), col_out);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_front);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col_front);
             }
             TketOp::Ry => {
-                // let (_, col_in) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let col_out: usize = self.tab.add_qubits(2);
                 let col_front: usize = col_out + 1;
@@ -645,18 +515,12 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 in_out.xor_bit(col_out);
                 self.tab.project_commuting_with(&in_out, &in_out);
                 self.tab.add_stab(in_out.clone(), in_out, true);
-                // self.internal_in_cols.insert((node, IncomingPort::from(0)), col_in);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(0)), col_out);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(0)), col_in);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(0)), col_out);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_front);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col_front);
             }
             TketOp::Toffoli => {
-                // let (_, col_in0) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
-                // let (_, col_in1) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(1))).unwrap();
-                // let (_, col_in2) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(2))).unwrap();
                 let (_, col_in0) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in1) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1))).unwrap();
                 let (_, col_in2) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(2))).unwrap();
@@ -698,21 +562,12 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 self.tab.add_stab(in_out_0, BitVector::new(self.tab.nb_qubits), false);
                 self.tab.add_stab(in_out_1, BitVector::new(self.tab.nb_qubits), false);
                 self.tab.add_stab(BitVector::new(self.tab.nb_qubits), in_out_2, false);
-                // self.internal_in_cols.insert((node, IncomingPort::from(0)), col_in0);
-                // self.internal_in_cols.insert((node, IncomingPort::from(1)), col_in1);
-                // self.internal_in_cols.insert((node, IncomingPort::from(2)), col_in2);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(0)), col_out0);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(1)), col_out1);
-                // self.internal_out_cols.insert((node, OutgoingPort::from(2)), col_out2);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(0)), col_in0);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(1)), col_in1);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(2)), col_in2);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(0)), col_out0);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(1)), col_out1);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, OutgoingPort::from(2)), col_out2);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_front0);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap(), col_front1);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(2)).unwrap(), col_front2);
                 let (next_node0, next_port0) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node0, next_port0), col_front0);
                 let (next_node1, next_port1) = hugr.single_linked_input(node, OutgoingPort::from(1)).unwrap();
@@ -721,9 +576,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node2, next_port2), col_front2);
             }
             TketOp::MeasureFree => {
-                // let (_, col_in) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
-                // self.internal_in_cols.insert((node, IncomingPort::from(0)), col_in);
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, IncomingPort::from(0)), col_in);
             }
             TketOp::QAlloc => {
@@ -732,12 +585,10 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 let mut front_bv = BitVector::new(self.tab.nb_qubits);
                 front_bv.xor_bit(col_front);
                 self.tab.add_stab(front_bv, BitVector::new(self.tab.nb_qubits), false);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_front);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col_front);
             }
             TketOp::QFree => {
-                // let (_, col_in) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 // Project out non-commuting rows and remove column from tableau
                 self.tab.project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
@@ -749,7 +600,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 }
             }
             TketOp::Reset => {
-                // let (_, col_in) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col_in) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 // Project out non-commuting rows
                 self.tab.project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
@@ -758,24 +608,19 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 let mut bv = BitVector::new(self.tab.nb_qubits);
                 bv.xor_bit(col_in);
                 self.tab.add_stab(bv, BitVector::new(self.tab.nb_qubits), false);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col_in);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col_in);
             }
             TketOp::V => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_v(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
             TketOp::Vdg => {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, IncomingPort::from(0))).unwrap();
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0))).unwrap();
                 self.tab.append_v(col);
                 self.tab.append_x(col);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap(), col);
                 let (next_node, next_port) = hugr.single_linked_input(node, OutgoingPort::from(0)).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col);
             }
@@ -791,8 +636,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
         // For each Qubit input, move the column from frontier_cols to internal_in_cols
         for (p, t) in hugr.in_value_types(node) {
             if t == qb_t() {
-                // let (_, col) = self.frontier_cols.remove_by_left(&(node, p)).unwrap();
-                // self.internal_in_cols.insert((node, p), col);
                 let (_, col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, p)).unwrap();
                 self.q_index_map.insert(DataflowPoint::InternalIn(node, p), col);
             }
@@ -808,9 +651,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 out_front.xor_bit(col_front);
                 self.tab.add_stab(BitVector::new(self.tab.nb_qubits), out_front.clone(), false);
                 self.tab.add_stab(out_front, BitVector::new(self.tab.nb_qubits), false);
-                // self.internal_out_cols.insert((node, p), col_out);
                 self.q_index_map.insert(DataflowPoint::InternalOut(node, p), col_out);
-                // self.frontier_cols.insert(hugr.single_linked_input(node, p).unwrap(), col_front);
                 let (next_node, next_port) = hugr.single_linked_input(node, p).unwrap();
                 self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), col_front);
             }
@@ -837,24 +678,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 }
             }
         }
-        // for (port, col) in node_analysis.in_cols.iter() {
-        //     self.nested_in_cols.insert((node, *port), *col + old_n_qbs);
-        // }
-        // for (port, col) in node_analysis.out_cols.iter() {
-        //     self.nested_out_cols.insert((node, *port), *col + old_n_qbs);
-        // }
-        // for (node_port, col) in node_analysis.internal_in_cols.iter() {
-        //     self.internal_in_cols.insert(*node_port, *col + old_n_qbs);
-        // }
-        // for (node_port, col) in node_analysis.internal_out_cols.iter() {
-        //     self.internal_out_cols.insert(*node_port, *col + old_n_qbs);
-        // }
-        // for (node_port, col) in node_analysis.nested_in_cols.iter() {
-        //     self.nested_in_cols.insert(*node_port, *col + old_n_qbs);
-        // }
-        // for (node_port, col) in node_analysis.nested_out_cols.iter() {
-        //     self.nested_out_cols.insert(*node_port, *col + old_n_qbs);
-        // }
         for i in 0..node_analysis.tab.nb_stabs {
             let mut new_z = BitVector::new(old_n_qbs);
             new_z.extend_vec(node_analysis.tab.z[i].get_boolean_vec(), old_n_qbs);
@@ -864,11 +687,8 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
         for port in hugr.node_inputs(node) {
             let out_port = OutgoingPort::from(port.index());
-            // let (_, internal_col) = self.frontier_cols.remove_by_left(&(node, port)).unwrap();
             let (_, internal_col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, port)).unwrap();
-            // self.internal_in_cols.insert((node, port), internal_col);
             self.q_index_map.insert(DataflowPoint::InternalIn(node, port), internal_col);
-            // let nested_col = self.nested_in_cols.get_by_left(&(node, out_port));
             let nested_col = self.q_index_map.get_by_left(&DataflowPoint::NestedIn(node, out_port)).unwrap();
             // Project ZZ and XX to compose nested_col and internal_col
             let mut nested_internal = BitVector::new(self.tab.nb_qubits);
@@ -881,13 +701,10 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
         for port in hugr.node_outputs(node) {
             let in_port = IncomingPort::from(port.index());
-            // let nested_col = self.nested_out_cols.get_by_left(&(node, in_port));
             let nested_col = *self.q_index_map.get_by_left(&DataflowPoint::NestedOut(node, in_port)).unwrap();
             let internal_col = self.tab.add_qubits(2);
-            // self.internal_out_cols.insert((node, port), internal_col);
             self.q_index_map.insert(DataflowPoint::InternalOut(node, port), internal_col);
             let front_col = internal_col + 1;
-            // self.frontier_cols.insert(hugr.single_linked_input(node, port).unwrap(), front_col);
             let (next_node, next_port) = hugr.single_linked_input(node, port).unwrap();
             self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), front_col);
             // Add rows for identity internal_col--front_col
@@ -911,10 +728,10 @@ impl<H: HugrView> StabilizerDataflow<H> {
 
 #[cfg(test)]
 mod test {
-    use hugr::{builder::{endo_sig, ConditionalBuilder, Container, DFGBuilder, Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder, HugrBuilder, SubContainer}, extension::{self, prelude::{bool_t, qb_t, usize_t}, Version}, ops::{handle::NodeHandle, OpType, OpaqueOp, Value}, type_row, types::Signature, Extension, HugrView, IncomingPort, OutgoingPort};
+    use hugr::{builder::{endo_sig, Container, Dataflow, DataflowHugr, FunctionBuilder, HugrBuilder}, extension::{prelude::{qb_t, usize_t}, Version}, ops::{handle::NodeHandle, Value}, types::Signature, Extension, HugrView, IncomingPort, OutgoingPort};
     use tket::{extension::rotation::ConstRotation, TketOp};
 
-    use crate::{bit_vector::BitVector, pauli_product::PauliProduct, stabilizer_dataflow::{DataflowPoint, FunctionOpacity, StabilizerDataflow}};
+    use crate::stabilizer_dataflow::{DataflowPoint, FunctionOpacity, StabilizerDataflow};
 
 
     #[test]
