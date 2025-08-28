@@ -1,8 +1,7 @@
 use crate::bit_vector::BitVector;
-use crate::pauli_product::PauliProduct;
 use std::cmp::min;
 use std::iter::zip;
-use tket::TketOp;
+use itertools::{interleave, Itertools};
 
 #[derive(Debug, Clone)]
 pub struct SymplecticTableau {
@@ -339,6 +338,12 @@ impl SymplecticTableau {
         }
     }
 
+    pub fn all_columns(& self) -> Vec<(usize, PauliXZ)> {
+        interleave(
+            (0..self.nb_stabs).map(|c| (c, PauliXZ::X)),
+            (0..self.nb_stabs).map(|c| (c, PauliXZ::Z))
+        ).collect_vec()
+    }
 
     // Call echelon to minimise the number of rows with non-zero components in the given columns, then remove those rows with such non-zero components
     pub fn project(&mut self, cols: &Vec<(usize, PauliXZ)>) {
