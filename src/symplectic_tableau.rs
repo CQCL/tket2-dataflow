@@ -1,5 +1,6 @@
 use crate::bit_vector::BitVector;
-use std::cmp::min;
+use std::fmt;
+use std::{cmp::min, fmt::Display};
 use std::iter::zip;
 use itertools::{interleave, Itertools};
 
@@ -42,13 +43,13 @@ impl SymplecticTableau {
         self.z.push(z);
         self.x.push(x);
         self.signs.extend_vec(vec![sign], self.nb_stabs);
-        self.nb_stabs = self.nb_stabs + 1;
+        self.nb_stabs += 1;
         stab_id
     }
 
     pub fn add_qubits(&mut self, nb_new_qbs: usize) -> usize {
         let qb_base = self.nb_qubits;
-        self.nb_qubits = self.nb_qubits + nb_new_qbs;
+        self.nb_qubits += nb_new_qbs;
         for zv in &mut self.z {
             zv.extend_vec(vec![false; nb_new_qbs], nb_new_qbs);
         }
@@ -174,6 +175,20 @@ impl SymplecticTableau {
             // If xt, flip zc
             if xt {
                 zv.xor_bit(ctrl);
+            }
+        }
+    }
+
+    pub fn append_swap(&mut self, q0: usize, q1: usize) {
+        for (zv, xv) in zip(self.z.iter_mut(), self.x.iter_mut()) {
+            // To swap, just negate both bits if they differ
+            if zv.get(q0) ^ zv.get(q1) {
+                zv.xor_bit(q0);
+                zv.xor_bit(q1);
+            }
+            if xv.get(q0) ^ xv.get(q1) {
+                xv.xor_bit(q0);
+                xv.xor_bit(q1);
             }
         }
     }
@@ -470,7 +485,40 @@ impl SymplecticTableau {
         for i in pivot_stab..l0_tab.nb_stabs {
             res_tab.add_stab(l0_tab.z[i].clone(), l0_tab.x[i].clone(), l0_tab.signs.get(i));
         }
+        for i in 0..res_tab.nb_stabs { assert_eq!(res_tab.z[i].blocks.len(), 1); }
         res_tab
     }
 
+}
+
+impl Display for SymplecticTableau {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for i in 0..self.nb_stabs {
+            let mut pauli_str = String::new();
+            if self.signs.get(i) {
+                pauli_str.push('-');
+            }
+            else {
+                pauli_str.push('+');
+            }
+            for q in 0..self.nb_qubits {
+                match (self.x[i].get(q), self.z[i].get(q)) {
+                    (false, false) => {
+                        pauli_str.push(' ');
+                    }
+                    (false, true) => {
+                        pauli_str.push('Z');
+                    }
+                    (true, false) => {
+                        pauli_str.push('X');
+                    }
+                    (true, true) => {
+                        pauli_str.push('Y');
+                    }
+                }
+            }
+            write!(f, "{}\n", pauli_str)?;
+        }
+        Ok(())
+    }
 }

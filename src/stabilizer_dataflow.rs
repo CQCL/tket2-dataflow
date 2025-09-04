@@ -268,84 +268,106 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     fn run_tail_loop(hugr: &H, node: H::Node, fun_op: &FunctionOpacity) -> StabilizerDataflow<H> {
-        let child_node = hugr.children(node).exactly_one().ok().unwrap();
-        let child_analysis = StabilizerDataflow::run_dfg(hugr, child_node, fun_op);
+        // The output of the loop body includes a Sum[just_inputs, just_outputs] to dictate whether to loop; region-based analysis would scale exponentially in the number of Sum types, so we assume any qubits included in it have been projected out and therefore we have no information about qubits in just_outputs, or about qubits in just_inputs passed to the next iteration
+        // Tail loops are run at least once; despite this we still reach a fixpoint with a single join:
+        // Suppose PCQ and PCCQ; the latter suggests there is some R s.t. PCR and RCQ; combining, we get CQR, PRC, RCR; then for any number of iterations we can go PCR,RCR,RCR,...,RCQ
+        // Even if we interpose them with some black-box initialisation B over [just_inputs], PCBCQ still implies a split by R which commutes with B (i.e. is on disjoint qubits) so we can still identify that R is an invariant of BC
+        let mut body_analysis = StabilizerDataflow::run_dfg(hugr, node, fun_op);
+        let tl = hugr.get_optype(node).as_tail_loop().unwrap();
         let mut analysis = StabilizerDataflow{
             tab: SymplecticTableau::new(0),
             q_index_map: BiHashMap::default(),
-            nested_analysis: HashMap::default()
+            nested_analysis: body_analysis.nested_analysis,
         };
-        let tl = hugr.get_optype(node).as_tail_loop().unwrap();
-        // tl.just_inputs only appear in final signature within a Sum, so qubits there will be projected away
-        // tl.just_outputs do appear in the final signature, but we will not have any information about the qubits there
+        // Build q_index_map for target qubit structure
+        for (in_port, in_type) in tl.just_inputs.iter().enumerate() {
+            if *in_type == qb_t() {
+                let new_col = analysis.tab.add_qubits(1);
+                analysis.q_index_map.insert(DataflowPoint::Input(OutgoingPort::from(in_port)), new_col);
+            }
+        }
         for (out_port, out_type) in tl.just_outputs.iter().enumerate() {
             if *out_type == qb_t() {
                 let new_col = analysis.tab.add_qubits(1);
                 analysis.q_index_map.insert(DataflowPoint::Output(IncomingPort::from(out_port)), new_col);
             }
         }
-        // tl.rest appear in the final input signature from port 1 onwards and in the output signature from port (tl.just_outputs.len()) onwards
-        for (port_index, port_type) in tl.rest.iter().enumerate() {
-            if *port_type == qb_t() {
-                let in_col = analysis.tab.add_qubits(2);
-                analysis.q_index_map.insert(DataflowPoint::Input(OutgoingPort::from(port_index + 1)), in_col);
-                let out_col = in_col + 1;
-                analysis.q_index_map.insert(DataflowPoint::Output(IncomingPort::from(port_index + tl.just_outputs.len())), out_col);
-                // Add rows for identity in_col--out_col
-                let mut ii = BitVector::new(analysis.tab.nb_qubits);
-                ii.xor_bit(in_col);
-                ii.xor_bit(out_col);
-                analysis.tab.add_stab(BitVector::new(analysis.tab.nb_qubits), ii.clone(), false);
-                analysis.tab.add_stab(ii, BitVector::new(analysis.tab.nb_qubits), false);
+        for (io_port, io_type) in tl.rest.iter().enumerate() {
+            if *io_type == qb_t() {
+                let first_col = analysis.tab.add_qubits(2);
+                analysis.q_index_map.insert(DataflowPoint::Input(OutgoingPort::from(io_port + tl.just_inputs.len())), first_col);
+                analysis.q_index_map.insert(DataflowPoint::Output(IncomingPort::from(io_port + tl.just_outputs.len())), first_col + 1);
             }
         }
-        let mut projected_tab = child_analysis.tab.clone();
-        // Project out non-IO columns and those not shared by input and output
-        let non_ios: Vec<usize> = analysis.q_index_map.iter().filter(|(dfp, _)| {
-            match dfp {
-                DataflowPoint::Input(port) => {
-                    port.index() == 0
-                }
-                DataflowPoint::Output(port) => {
-                    port.index() < tl.just_outputs.len()
-                }
-                _ => { true }
-            }
-        }).map(|(_, q)| *q).collect_vec();
+        // Project body_analysis.tab and reorder to match target q_index_map
+        let non_ios: Vec<usize> = body_analysis.q_index_map.iter().filter(|(dfp, _)| !(matches!(dfp, DataflowPoint::Input(_)) || matches!(dfp, DataflowPoint::Output(_)))).map(|(_, q)| *q).collect_vec();
         let project_cols: Vec<(usize, PauliXZ)> = chain!(
             non_ios.iter().map(|i| (*i, PauliXZ::X)),
-            non_ios.iter().map(|i| (*i, PauliXZ::Z)),
+            non_ios.iter().map(|i| (*i, PauliXZ::Z))
         ).collect_vec();
-        projected_tab.project(&project_cols);
-        // Rebuild projected_tab with the colum order given by analysis.q_index_map
-        let mut unified_order_tab = SymplecticTableau::new(analysis.q_index_map.len());
-        for i in 0..projected_tab.nb_stabs {
+        body_analysis.tab.project(&project_cols);
+        for i in 0..body_analysis.tab.nb_stabs {
             let mut z = BitVector::new(analysis.q_index_map.len());
             let mut x = BitVector::new(analysis.q_index_map.len());
             for (dfp, new_col) in analysis.q_index_map.iter() {
                 match dfp {
-                    DataflowPoint::Input(port) => {
-                        if port.index() != 0 {
-                            let old_col = child_analysis.q_index_map.get_by_left(&DataflowPoint::Input(OutgoingPort::from(port.index() - 1))).unwrap();
-                            if projected_tab.z[i].get(*old_col) { z.xor_bit(*new_col) }
-                            if projected_tab.x[i].get(*old_col) { x.xor_bit(*new_col) }
-                        }
+                    DataflowPoint::Input(_) => {
+                        // Port indexing inside and outside the loop match at the inputs
+                        let old_col = body_analysis.q_index_map.get_by_left(dfp).unwrap();
+                        if body_analysis.tab.z[i].get(*old_col) { z.xor_bit(*new_col) }
+                        if body_analysis.tab.x[i].get(*old_col) { x.xor_bit(*new_col) }
                     }
                     DataflowPoint::Output(port) => {
                         if port.index() >= tl.just_outputs.len() {
-                            let old_col = child_analysis.q_index_map.get_by_left(&DataflowPoint::Output(IncomingPort::from(port.index() - tl.just_outputs.len()))).unwrap();
-                            if projected_tab.z[i].get(*old_col) { z.xor_bit(*new_col) }
-                            if projected_tab.x[i].get(*old_col) { x.xor_bit(*new_col) }
+                            let old_col = body_analysis.q_index_map.get_by_left(&DataflowPoint::Output(IncomingPort::from(port.index() + 1 - tl.just_outputs.len()))).unwrap();
+                            if body_analysis.tab.z[i].get(*old_col) { z.xor_bit(*new_col) }
+                            if body_analysis.tab.x[i].get(*old_col) { x.xor_bit(*new_col) }
                         }
                     }
                     _ => {}
                 }
             }
-            unified_order_tab.add_stab(z, x, projected_tab.signs.get(i));
+            analysis.tab.add_stab(z, x, body_analysis.tab.signs.get(i));
         }
-        // Compute join of tabs
-        analysis.tab = SymplecticTableau::join(&unified_order_tab, &analysis.tab);
-        analysis.nested_analysis.insert(child_node, child_analysis);
+        // Compose body_analysis.tab with itself and reorder to match target q_index_map
+        let mut iter_2_tab = analysis.tab.clone();
+        iter_2_tab.add_qubits(iter_2_tab.nb_qubits);
+        for i in 0..analysis.tab.nb_stabs {
+            let mut z = BitVector::new(analysis.tab.nb_qubits);
+            let mut x = BitVector::new(analysis.tab.nb_qubits);
+            z.extend_vec(analysis.tab.z[i].get_sized_boolean_vec(analysis.tab.nb_qubits), analysis.tab.nb_qubits);
+            x.extend_vec(analysis.tab.x[i].get_sized_boolean_vec(analysis.tab.nb_qubits), analysis.tab.nb_qubits);
+            iter_2_tab.add_stab(z, x, analysis.tab.signs.get(i));
+        }
+        for (rest_index, rest_type) in tl.rest.iter().enumerate() {
+            if *rest_type == qb_t() {
+                let iter1_out = analysis.q_index_map.get_by_left(&DataflowPoint::Output(IncomingPort::from(tl.just_outputs.len() + rest_index))).unwrap();
+                let iter2_in = analysis.tab.nb_qubits + analysis.q_index_map.get_by_left(&DataflowPoint::Input(OutgoingPort::from(tl.just_inputs.len() + rest_index))).unwrap();
+                // Project ZZ and XX to compose
+                let mut both_qubits = BitVector::new(iter_2_tab.nb_qubits);
+                both_qubits.xor_bit(*iter1_out);
+                both_qubits.xor_bit(iter2_in);
+                iter_2_tab.project_commuting_with(&BitVector::new(iter_2_tab.nb_qubits), &both_qubits);
+                iter_2_tab.project_commuting_with(&both_qubits, &BitVector::new(iter_2_tab.nb_qubits));
+                iter_2_tab.add_stab(BitVector::new(iter_2_tab.nb_qubits), both_qubits.clone(), false);
+                iter_2_tab.add_stab(both_qubits, BitVector::new(iter_2_tab.nb_qubits), false);
+                // Swap qubits to get all final qubits in their intended position
+                let iter2_out = iter2_in + 1;
+                iter_2_tab.append_swap(*iter1_out, iter2_out);
+            }
+        }
+        let iter_2_project_cols: Vec<(usize, PauliXZ)> = chain!(
+            (analysis.tab.nb_qubits..iter_2_tab.nb_qubits).map(|i| (i, PauliXZ::X)),
+            (analysis.tab.nb_qubits..iter_2_tab.nb_qubits).map(|i| (i, PauliXZ::Z))
+        ).collect_vec();
+        iter_2_tab.project(&iter_2_project_cols);
+        for q in (analysis.tab.nb_qubits..iter_2_tab.nb_qubits).rev() {
+            // This removes the joined qubits and any of just_inputs from iteration 2
+            // Since no information is obtained for just_outputs, it doesn't matter which copy of the qubits we remove
+            iter_2_tab.delete_qubit(q);
+       }
+        // Take join
+        analysis.tab = SymplecticTableau::join(&analysis.tab, &iter_2_tab);
         analysis
     }
 
@@ -680,47 +702,51 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
         for i in 0..node_analysis.tab.nb_stabs {
             let mut new_z = BitVector::new(old_n_qbs);
-            new_z.extend_vec(node_analysis.tab.z[i].get_boolean_vec(), old_n_qbs);
+            new_z.extend_vec(node_analysis.tab.z[i].get_sized_boolean_vec(n_added_qbs), old_n_qbs);
             let mut new_x = BitVector::new(old_n_qbs);
-            new_x.extend_vec(node_analysis.tab.x[i].get_boolean_vec(), old_n_qbs);
+            new_x.extend_vec(node_analysis.tab.x[i].get_sized_boolean_vec(n_added_qbs), old_n_qbs);
             self.tab.add_stab(new_z, new_x, node_analysis.tab.signs.get(i));
         }
-        for port in hugr.node_inputs(node) {
-            let out_port = OutgoingPort::from(port.index());
-            let (_, internal_col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, port)).unwrap();
-            self.q_index_map.insert(DataflowPoint::InternalIn(node, port), internal_col);
-            let nested_col = self.q_index_map.get_by_left(&DataflowPoint::NestedIn(node, out_port)).unwrap();
-            // Project ZZ and XX to compose nested_col and internal_col
-            let mut nested_internal = BitVector::new(self.tab.nb_qubits);
-            nested_internal.xor_bit(*nested_col);
-            nested_internal.xor_bit(internal_col);
-            self.tab.project_commuting_with(&BitVector::new(self.tab.nb_qubits), &nested_internal);
-            self.tab.project_commuting_with(&nested_internal, &BitVector::new(self.tab.nb_qubits));
-            self.tab.add_stab(BitVector::new(self.tab.nb_qubits), nested_internal.clone(), false);
-            self.tab.add_stab(nested_internal, BitVector::new(self.tab.nb_qubits), false);
+        for (port, in_type) in hugr.in_value_types(node) {
+            if in_type == qb_t() {
+                let out_port = OutgoingPort::from(port.index());
+                let (_, internal_col) = self.q_index_map.remove_by_left(&DataflowPoint::Frontier(node, port)).unwrap();
+                self.q_index_map.insert(DataflowPoint::InternalIn(node, port), internal_col);
+                let nested_col = self.q_index_map.get_by_left(&DataflowPoint::NestedIn(node, out_port)).unwrap();
+                // Project ZZ and XX to compose nested_col and internal_col
+                let mut nested_internal = BitVector::new(self.tab.nb_qubits);
+                nested_internal.xor_bit(*nested_col);
+                nested_internal.xor_bit(internal_col);
+                self.tab.project_commuting_with(&BitVector::new(self.tab.nb_qubits), &nested_internal);
+                self.tab.project_commuting_with(&nested_internal, &BitVector::new(self.tab.nb_qubits));
+                self.tab.add_stab(BitVector::new(self.tab.nb_qubits), nested_internal.clone(), false);
+                self.tab.add_stab(nested_internal, BitVector::new(self.tab.nb_qubits), false);
+            }
         }
-        for port in hugr.node_outputs(node) {
-            let in_port = IncomingPort::from(port.index());
-            let nested_col = *self.q_index_map.get_by_left(&DataflowPoint::NestedOut(node, in_port)).unwrap();
-            let internal_col = self.tab.add_qubits(2);
-            self.q_index_map.insert(DataflowPoint::InternalOut(node, port), internal_col);
-            let front_col = internal_col + 1;
-            let (next_node, next_port) = hugr.single_linked_input(node, port).unwrap();
-            self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), front_col);
-            // Add rows for identity internal_col--front_col
-            let mut internal_front = BitVector::new(self.tab.nb_qubits);
-            internal_front.xor_bit(internal_col);
-            internal_front.xor_bit(front_col);
-            self.tab.add_stab(BitVector::new(self.tab.nb_qubits), internal_front.clone(), false);
-            self.tab.add_stab(internal_front, BitVector::new(self.tab.nb_qubits), false);
-            // Project ZZ and XX to compose nested_col and internal_col
-            let mut nested_internal = BitVector::new(self.tab.nb_qubits);
-            nested_internal.xor_bit(nested_col);
-            nested_internal.xor_bit(internal_col);
-            self.tab.project_commuting_with(&BitVector::new(self.tab.nb_qubits), &nested_internal);
-            self.tab.project_commuting_with(&nested_internal, &BitVector::new(self.tab.nb_qubits));
-            self.tab.add_stab(BitVector::new(self.tab.nb_qubits), nested_internal.clone(), false);
-            self.tab.add_stab(nested_internal, BitVector::new(self.tab.nb_qubits), false);
+        for (port, out_type) in hugr.out_value_types(node) {
+            if out_type == qb_t() {
+                let in_port = IncomingPort::from(port.index());
+                let nested_col = *self.q_index_map.get_by_left(&DataflowPoint::NestedOut(node, in_port)).unwrap();
+                let internal_col = self.tab.add_qubits(2);
+                self.q_index_map.insert(DataflowPoint::InternalOut(node, port), internal_col);
+                let front_col = internal_col + 1;
+                let (next_node, next_port) = hugr.single_linked_input(node, port).unwrap();
+                self.q_index_map.insert(DataflowPoint::Frontier(next_node, next_port), front_col);
+                // Add rows for identity internal_col--front_col
+                let mut internal_front = BitVector::new(self.tab.nb_qubits);
+                internal_front.xor_bit(internal_col);
+                internal_front.xor_bit(front_col);
+                self.tab.add_stab(BitVector::new(self.tab.nb_qubits), internal_front.clone(), false);
+                self.tab.add_stab(internal_front, BitVector::new(self.tab.nb_qubits), false);
+                // Project ZZ and XX to compose nested_col and internal_col
+                let mut nested_internal = BitVector::new(self.tab.nb_qubits);
+                nested_internal.xor_bit(nested_col);
+                nested_internal.xor_bit(internal_col);
+                self.tab.project_commuting_with(&BitVector::new(self.tab.nb_qubits), &nested_internal);
+                self.tab.project_commuting_with(&nested_internal, &BitVector::new(self.tab.nb_qubits));
+                self.tab.add_stab(BitVector::new(self.tab.nb_qubits), nested_internal.clone(), false);
+                self.tab.add_stab(nested_internal, BitVector::new(self.tab.nb_qubits), false);
+            }
         }
     }
 
@@ -728,7 +754,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
 
 #[cfg(test)]
 mod test {
-    use hugr::{builder::{endo_sig, Container, Dataflow, DataflowHugr, FunctionBuilder, HugrBuilder}, extension::{prelude::{qb_t, usize_t}, Version}, ops::{handle::NodeHandle, Value}, types::Signature, Extension, HugrView, IncomingPort, OutgoingPort};
+    use hugr::{builder::{endo_sig, Container, Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder, HugrBuilder, SubContainer}, extension::{prelude::{bool_t, qb_t, usize_t}, Version}, ops::{handle::NodeHandle, Value}, type_row, types::Signature, Extension, HugrView, IncomingPort, OutgoingPort};
     use tket::{extension::rotation::ConstRotation, TketOp};
 
     use crate::stabilizer_dataflow::{DataflowPoint, FunctionOpacity, StabilizerDataflow};
@@ -1104,123 +1130,200 @@ mod test {
         assert_eq!(analysis.tab.signs.get(1), false);
     }
 
-    // #[test]
-    // fn test_if_simple() {
-    //     let mut builder = FunctionBuilder::new("if_simple", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
-    //     let [qb0, qb1, b] = builder.input_wires_arr();
-    //     let t = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
-    //     let [qb0] = t.outputs_arr();
-    //     let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb0), (qb_t(), qb1)], vec![qb_t(); 2].into()).unwrap();
-    //     let mut cond0_builder = cond_builder.case_builder(0).unwrap();
-    //     let [c0q0, c0q1] = cond0_builder.input_wires_arr();
-    //     let [c0q0, c0q1] = cond0_builder.add_dataflow_op(TketOp::CX, [c0q0, c0q1]).unwrap().outputs_arr();
-    //     cond0_builder.finish_with_outputs([c0q0, c0q1]).ok();
-    //     let cond1_builder = cond_builder.case_builder(1).unwrap();
-    //     let [c1c0, c1q1] = cond1_builder.input_wires_arr();
-    //     cond1_builder.finish_with_outputs([c1c0, c1q1]).ok();
-    //     let cond = cond_builder.finish_sub_container().unwrap();
-    //     let [qb0, qb1] = cond.outputs_arr();
-    //     let tdg = builder.add_dataflow_op(TketOp::Tdg, [qb0]).unwrap();
-    //     let [qb0] = tdg.outputs_arr();
-    //     let hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
-    //     let mut analysis = StabilizerDataflow::run_dfg(&hugr, hugr.first_child(hugr.module_root()).unwrap(), &FunctionOpacity::Opaque);
-    //     assert_eq!(analysis.tab.nb_qubits, 16);
-    //     assert_eq!(analysis.tab.nb_stabs, 14);
-    //     assert_eq!(*analysis.in_cols.get(&OutgoingPort::from(0)).unwrap(), 0);
-    //     assert_eq!(*analysis.internal_in_cols.get(&(t.node(), IncomingPort::from(0))).unwrap(), 1);
-    //     assert_eq!(*analysis.in_cols.get(&OutgoingPort::from(1)).unwrap(), 2);
-    //     assert_eq!(*analysis.internal_in_cols.get(&(cond.node(), IncomingPort::from(1))).unwrap(), 3);
-    //     assert_eq!(*analysis.internal_out_cols.get(&(t.node(), OutgoingPort::from(0))).unwrap(), 4);
-    //     assert_eq!(*analysis.internal_in_cols.get(&(cond.node(), IncomingPort::from(0))).unwrap(), 5);
-    //     assert_eq!(*analysis.nested_in_cols.get(&(cond.node(), OutgoingPort::from(0))).unwrap(), 6);
-    //     assert_eq!(*analysis.nested_in_cols.get(&(cond.node(), OutgoingPort::from(1))).unwrap(), 7);
-    //     assert_eq!(*analysis.nested_out_cols.get(&(cond.node(), IncomingPort::from(0))).unwrap(), 8);
-    //     assert_eq!(*analysis.nested_out_cols.get(&(cond.node(), IncomingPort::from(1))).unwrap(), 9);
-    //     assert_eq!(*analysis.internal_out_cols.get(&(cond.node(), OutgoingPort::from(0))).unwrap(), 10);
-    //     assert_eq!(*analysis.internal_in_cols.get(&(tdg.node(), IncomingPort::from(0))).unwrap(), 11);
-    //     assert_eq!(*analysis.internal_out_cols.get(&(cond.node(), OutgoingPort::from(1))).unwrap(), 12);
-    //     assert_eq!(*analysis.out_cols.get(&IncomingPort::from(1)).unwrap(), 13);
-    //     assert_eq!(*analysis.internal_out_cols.get(&(tdg.node(), OutgoingPort::from(0))).unwrap(), 14);
-    //     assert_eq!(*analysis.out_cols.get(&IncomingPort::from(0)).unwrap(), 15);
-    //     //TODO:: Row echelon
-    //     // Zin0
-    //     assert_eq!(analysis.tab.stabs.get(0).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(0).z.get_integer_vec(), vec![0b1000000000000001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(0).sign, false);
-    //     // Zt.in
-    //     assert_eq!(analysis.tab.stabs.get(1).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(1).z.get_integer_vec(), vec![0b0100000000000001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(1).sign, false);
-    //     // Xin1
-    //     assert_eq!(analysis.tab.stabs.get(2).x.get_integer_vec(), vec![0b0010000000000100i128]);
-    //     assert_eq!(analysis.tab.stabs.get(2).z.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(2).sign, false);
-    //     // Xcond.in1
-    //     assert_eq!(analysis.tab.stabs.get(3).x.get_integer_vec(), vec![0b0001000000000100i128]);
-    //     assert_eq!(analysis.tab.stabs.get(3).z.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(3).sign, false);
-    //     // Zt.out
-    //     assert_eq!(analysis.tab.stabs.get(4).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(4).z.get_integer_vec(), vec![0b0000100000000001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(4).sign, false);
-    //     // Zcond.in0
-    //     assert_eq!(analysis.tab.stabs.get(5).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(5).z.get_integer_vec(), vec![0b0000010000000001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(5).sign, false);
-    //     // Zcond.nin0
-    //     assert_eq!(analysis.tab.stabs.get(6).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(6).z.get_integer_vec(), vec![0b0000001000000001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(6).sign, false);
-    //     // Xcond.nin1
-    //     assert_eq!(analysis.tab.stabs.get(7).x.get_integer_vec(), vec![0b0000000100000100i128]);
-    //     assert_eq!(analysis.tab.stabs.get(7).z.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(7).sign, false);
-    //     // Zcond.nout0
-    //     assert_eq!(analysis.tab.stabs.get(8).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(8).z.get_integer_vec(), vec![0b0000000010000001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(8).sign, false);
-    //     // Xcond.nout1
-    //     assert_eq!(analysis.tab.stabs.get(9).x.get_integer_vec(), vec![0b0000000001000100i128]);
-    //     assert_eq!(analysis.tab.stabs.get(9).z.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(9).sign, false);
-    //     // Zcond.out0
-    //     assert_eq!(analysis.tab.stabs.get(10).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(10).z.get_integer_vec(), vec![0b0000000000100001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(10).sign, false);
-    //     // Ztdg.in
-    //     assert_eq!(analysis.tab.stabs.get(11).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(11).z.get_integer_vec(), vec![0b0000000000010001i128]);
-    //     assert_eq!(analysis.tab.stabs.get(11).sign, false);
-    //     // Xcond.out1
-    //     assert_eq!(analysis.tab.stabs.get(12).x.get_integer_vec(), vec![0b0000000000001100i128]);
-    //     assert_eq!(analysis.tab.stabs.get(12).z.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(12).sign, false);
-    //     // Ztdg.out
-    //     assert_eq!(analysis.tab.stabs.get(13).x.get_integer_vec(), vec![0i128]);
-    //     assert_eq!(analysis.tab.stabs.get(13).z.get_integer_vec(), vec![0b0000000000000011i128]);
-    //     assert_eq!(analysis.tab.stabs.get(13).sign, false);
-    // }
+    #[test]
+    fn test_if_simple() {
+        let mut builder = FunctionBuilder::new("if_simple", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
+        let [qb0, qb1, b] = builder.input_wires_arr();
+        let t = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
+        let [qb0] = t.outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb0), (qb_t(), qb1)], vec![qb_t(); 2].into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [c0q0, c0q1] = cond0_builder.input_wires_arr();
+        let [c0q0, c0q1] = cond0_builder.add_dataflow_op(TketOp::CX, [c0q0, c0q1]).unwrap().outputs_arr();
+        cond0_builder.finish_with_outputs([c0q0, c0q1]).ok();
+        let cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [c1c0, c1q1] = cond1_builder.input_wires_arr();
+        cond1_builder.finish_with_outputs([c1c0, c1q1]).ok();
+        let cond = cond_builder.finish_sub_container().unwrap();
+        let [qb0, qb1] = cond.outputs_arr();
+        let tdg = builder.add_dataflow_op(TketOp::Tdg, [qb0]).unwrap();
+        let [qb0] = tdg.outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
+        let mut analysis = StabilizerDataflow::run_dfg(&hugr, hugr.first_child(hugr.module_root()).unwrap(), &FunctionOpacity::Opaque);
+        assert_eq!(analysis.tab.nb_qubits, 16);
+        assert_eq!(analysis.tab.nb_stabs, 14);
+        assert_eq!(*analysis.q_index_map.get_by_right(&0).unwrap(), DataflowPoint::Input(OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&1).unwrap(), DataflowPoint::InternalIn(t.node(), IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&2).unwrap(), DataflowPoint::Input(OutgoingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&3).unwrap(), DataflowPoint::InternalIn(cond.node(), IncomingPort::from(2)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&4).unwrap(), DataflowPoint::InternalOut(t.node(), OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&5).unwrap(), DataflowPoint::InternalIn(cond.node(), IncomingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&6).unwrap(), DataflowPoint::NestedIn(cond.node(), OutgoingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&7).unwrap(), DataflowPoint::NestedIn(cond.node(), OutgoingPort::from(2)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&8).unwrap(), DataflowPoint::NestedOut(cond.node(), IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&9).unwrap(), DataflowPoint::NestedOut(cond.node(), IncomingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&10).unwrap(), DataflowPoint::InternalOut(cond.node(), OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&11).unwrap(), DataflowPoint::InternalIn(tdg.node(), IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&12).unwrap(), DataflowPoint::InternalOut(cond.node(), OutgoingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&13).unwrap(), DataflowPoint::Output(IncomingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&14).unwrap(), DataflowPoint::InternalOut(tdg.node(), OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&15).unwrap(), DataflowPoint::Output(IncomingPort::from(0)));
+        analysis.tab.echelon(&analysis.tab.all_columns());
+        // Zin0
+        assert_eq!(analysis.tab.x[0].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[0].get_integer_vec()[0], 0b1000000000000001i128);
+        assert_eq!(analysis.tab.signs.get(0), false);
+        // Zt.in
+        assert_eq!(analysis.tab.x[1].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[1].get_integer_vec()[0], 0b1000000000000010i128);
+        assert_eq!(analysis.tab.signs.get(1), false);
+        // Xin1
+        assert_eq!(analysis.tab.x[2].get_integer_vec()[0], 0b0010000000000100i128);
+        assert_eq!(analysis.tab.z[2].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(2), false);
+        // Note that after projecting ZZ and XX, the internals and nested boundaries of the conditional block have been disconnected from the rest of the circuit, now sharing Bell states
+        // Xcond.in1
+        assert_eq!(analysis.tab.x[3].get_integer_vec()[0], 0b0000000010001000i128);
+        assert_eq!(analysis.tab.z[3].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(3), false);
+        // Zcond.in1
+        assert_eq!(analysis.tab.x[4].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[4].get_integer_vec()[0], 0b0000000010001000i128);
+        assert_eq!(analysis.tab.signs.get(4), false);
+        // Zt.out
+        assert_eq!(analysis.tab.x[5].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[5].get_integer_vec()[0], 0b1000000000010000i128);
+        assert_eq!(analysis.tab.signs.get(5), false);
+        // Xcond.in0
+        assert_eq!(analysis.tab.x[6].get_integer_vec()[0], 0b0000000001100000i128);
+        assert_eq!(analysis.tab.z[6].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(6), false);
+        // Zcond.in0
+        assert_eq!(analysis.tab.x[7].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[7].get_integer_vec()[0], 0b0000000001100000i128);
+        assert_eq!(analysis.tab.signs.get(7), false);
+        // Xcond.nout0
+        assert_eq!(analysis.tab.x[8].get_integer_vec()[0], 0b0000010100000000i128);
+        assert_eq!(analysis.tab.z[8].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(8), false);
+        // Zcond.nout0
+        assert_eq!(analysis.tab.x[9].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[9].get_integer_vec()[0], 0b0000010100000000i128);
+        assert_eq!(analysis.tab.signs.get(9), false);
+        // Xcond.nout1
+        assert_eq!(analysis.tab.x[10].get_integer_vec()[0], 0b0001001000000000i128);
+        assert_eq!(analysis.tab.z[10].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(10), false);
+        // Zcond.nout1
+        assert_eq!(analysis.tab.x[11].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[11].get_integer_vec()[0], 0b0001001000000000i128);
+        assert_eq!(analysis.tab.signs.get(11), false);
+        // Ztdg.in
+        assert_eq!(analysis.tab.x[12].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[12].get_integer_vec()[0], 0b1000100000000000i128);
+        assert_eq!(analysis.tab.signs.get(12), false);
+        // Ztdg.out
+        assert_eq!(analysis.tab.x[13].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[13].get_integer_vec()[0], 0b1100000000000000i128);
+        assert_eq!(analysis.tab.signs.get(13), false);
+    }
 
-    // #[test]
-    // fn test_loop_null() {
-    //     let mut builder = FunctionBuilder::new("loop_null", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
-    //     let [qb0, qb1, b] = builder.input_wires_arr();
-    //     let reset = builder.add_dataflow_op(TketOp::Reset, [qb0]).unwrap();
-    //     let [qb0] = reset.outputs_arr();
-    //     let t = builder.add_dataflow_op(TketOp::T, [qb1]).unwrap();
-    //     let [qb1] = t.outputs_arr();
-    //     let mut loop_builder = builder.tail_loop_builder([(bool_t(), b)], [(qb_t(), qb0), (qb_t(), qb1), (bool_t(), b)], type_row![]).unwrap();
-    //     let [loop_qb0, loop_qb1, loop_b] = loop_builder.input_wires_arr();
-    //     let loop_t = loop_builder.add_dataflow_op(TketOp::T, [loop_qb0]).unwrap();
-    //     let [loop_qb0] = loop_t.outputs_arr();
-    //     let loop_tdg = loop_builder.add_dataflow_op(TketOp::Tdg, [loop_qb1]).unwrap();
-    //     let [loop_qb1] = loop_tdg.outputs_arr();
-    //     // let loop_b = loop_builder.make_break(loop_builder.loop_signature().unwrap().clone(), []).unwrap();
-    //     let tl = loop_builder.finish_with_outputs(loop_b, [loop_qb0, loop_qb1, loop_b]).unwrap();
-    //     let [qb0, qb1, b] = tl.outputs_arr();
-    //     let tdg = builder.add_dataflow_op(TketOp::Tdg, [qb1]).unwrap();
-    //     let [qb1] = tdg.outputs_arr();
-    //     let hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
-    //     let mut analysis = StabilizerDataflow::run_dfg(&hugr, hugr.first_child(hugr.module_root()).unwrap(), &FunctionOpacity::Opaque);
-    // }
+    #[test]
+    fn test_loop_null() {
+        let mut builder = FunctionBuilder::new("loop_null", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
+        let [qb0, qb1, b] = builder.input_wires_arr();
+        let reset = builder.add_dataflow_op(TketOp::Reset, [qb0]).unwrap();
+        let [qb0] = reset.outputs_arr();
+        let t = builder.add_dataflow_op(TketOp::T, [qb1]).unwrap();
+        let [qb1] = t.outputs_arr();
+        let mut loop_builder = builder.tail_loop_builder([(bool_t(), b)], [(qb_t(), qb0), (qb_t(), qb1)], type_row![]).unwrap();
+        let [_, loop_qb0, loop_qb1] = loop_builder.input_wires_arr();
+        let loop_t = loop_builder.add_dataflow_op(TketOp::T, [loop_qb0]).unwrap();
+        let [loop_qb0] = loop_t.outputs_arr();
+        let loop_tdg = loop_builder.add_dataflow_op(TketOp::Tdg, [loop_qb1]).unwrap();
+        let [loop_qb1] = loop_tdg.outputs_arr();
+        let loop_b = loop_builder.make_break(loop_builder.loop_signature().unwrap().clone(), []).unwrap();
+        let tl = loop_builder.finish_with_outputs(loop_b, [loop_qb0, loop_qb1]).unwrap();
+        let [qb0, qb1] = tl.outputs_arr();
+        let tdg = builder.add_dataflow_op(TketOp::Tdg, [qb1]).unwrap();
+        let [qb1] = tdg.outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
+        let mut analysis = StabilizerDataflow::run_dfg(&hugr, hugr.first_child(hugr.module_root()).unwrap(), &FunctionOpacity::Opaque); 
+        assert_eq!(analysis.tab.nb_qubits, 16);
+        assert_eq!(analysis.tab.nb_stabs, 14);
+        assert_eq!(*analysis.q_index_map.get_by_right(&0).unwrap(), DataflowPoint::Input(OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&1).unwrap(), DataflowPoint::InternalIn(tl.node(), IncomingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&2).unwrap(), DataflowPoint::Input(OutgoingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&3).unwrap(), DataflowPoint::InternalIn(t.node(), IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&4).unwrap(), DataflowPoint::InternalOut(t.node(), OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&5).unwrap(), DataflowPoint::InternalIn(tl.node(), IncomingPort::from(2)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&6).unwrap(), DataflowPoint::NestedIn(tl.node(), OutgoingPort::from(1)));
+        // Ports from NestedIn and NestedOut are wrt the nested analysis; in this case respecting the final signature of the TailLoop and not the signature of the body
+        assert_eq!(*analysis.q_index_map.get_by_right(&7).unwrap(), DataflowPoint::NestedOut(tl.node(), IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&8).unwrap(), DataflowPoint::NestedIn(tl.node(), OutgoingPort::from(2)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&9).unwrap(), DataflowPoint::NestedOut(tl.node(), IncomingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&10).unwrap(), DataflowPoint::InternalOut(tl.node(), OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&11).unwrap(), DataflowPoint::Output(IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&12).unwrap(), DataflowPoint::InternalOut(tl.node(), OutgoingPort::from(1)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&13).unwrap(), DataflowPoint::InternalIn(tdg.node(), IncomingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&14).unwrap(), DataflowPoint::InternalOut(tdg.node(), OutgoingPort::from(0)));
+        assert_eq!(*analysis.q_index_map.get_by_right(&15).unwrap(), DataflowPoint::Output(IncomingPort::from(1)));
+        analysis.tab.echelon(&analysis.tab.all_columns());
+        // Xtl.in1
+        assert_eq!(analysis.tab.x[0].get_integer_vec()[0], 0b0000000001000010i128);
+        assert_eq!(analysis.tab.z[0].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(0), false);
+        // Ztl.in1
+        assert_eq!(analysis.tab.x[1].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[1].get_integer_vec()[0], 0b0000000001000010i128);
+        assert_eq!(analysis.tab.signs.get(1), false);
+        // Zin1
+        assert_eq!(analysis.tab.x[2].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[2].get_integer_vec()[0], 0b1000000000000100i128);
+        assert_eq!(analysis.tab.signs.get(2), false);
+        // Zt.in
+        assert_eq!(analysis.tab.x[3].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[3].get_integer_vec()[0], 0b1000000000001000i128);
+        assert_eq!(analysis.tab.signs.get(3), false);
+        // Zt.out
+        assert_eq!(analysis.tab.x[4].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[4].get_integer_vec()[0], 0b1000000000010000i128);
+        assert_eq!(analysis.tab.signs.get(4), false);
+        // Xtl.in2
+        assert_eq!(analysis.tab.x[5].get_integer_vec()[0], 0b0000000100100000i128);
+        assert_eq!(analysis.tab.z[5].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(5), false);
+        // Ztl.in2
+        assert_eq!(analysis.tab.x[6].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[6].get_integer_vec()[0], 0b0000000100100000i128);
+        assert_eq!(analysis.tab.signs.get(6), false);
+        // Xtl.nout0
+        assert_eq!(analysis.tab.x[7].get_integer_vec()[0], 0b0000010010000000i128);
+        assert_eq!(analysis.tab.z[7].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(7), false);
+        // Ztl.nout0
+        assert_eq!(analysis.tab.x[8].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[8].get_integer_vec()[0], 0b0000010010000000i128);
+        assert_eq!(analysis.tab.signs.get(8), false);
+        // Xtl.nout1
+        assert_eq!(analysis.tab.x[9].get_integer_vec()[0], 0b0001001000000000i128);
+        assert_eq!(analysis.tab.z[9].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.signs.get(9), false);
+        // Ztl.nout1
+        assert_eq!(analysis.tab.x[10].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[10].get_integer_vec()[0], 0b0001001000000000i128);
+        assert_eq!(analysis.tab.signs.get(10), false);
+        // Zout0
+        assert_eq!(analysis.tab.x[11].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[11].get_integer_vec()[0], 0b0000100000000000i128);
+        assert_eq!(analysis.tab.signs.get(11), false);
+        // Ztdg.in
+        assert_eq!(analysis.tab.x[12].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[12].get_integer_vec()[0], 0b1010000000000000i128);
+        assert_eq!(analysis.tab.signs.get(12), false);
+        // Ztdg.out
+        assert_eq!(analysis.tab.x[13].get_integer_vec()[0], 0i128);
+        assert_eq!(analysis.tab.z[13].get_integer_vec()[0], 0b1100000000000000i128);
+        assert_eq!(analysis.tab.signs.get(13), false);
+    }
 }

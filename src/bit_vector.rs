@@ -313,6 +313,32 @@ impl BitVector {
         vec
     }
 
+    pub fn get_sized_boolean_vec(&self, mut nb_bits: usize) -> Vec<bool> {
+        let mut vec: Vec<bool> = Vec::with_capacity(nb_bits);
+        for block_index in 0..self.blocks.len() {
+            let arr = self.extract_block(block_index);
+            for j in 0..8 {
+                if nb_bits < 32 {
+                    for i in 0..nb_bits {
+                        vec.push(arr[j] & (1 << i) != 0);
+                    }
+                    return vec
+                }
+                else {
+                    for i in 0..32 {
+                        vec.push(arr[j] & (1 << i) != 0);
+                    }
+                    nb_bits -= 32;
+                }
+            }
+        }
+        // Pad to desired length
+        for _ in 0..nb_bits {
+            vec.push(false);
+        }
+        vec
+    }
+
     pub fn get_integer_vec(&self) -> Vec<i128> {
         let mut vec: Vec<i128> = Vec::with_capacity(self.blocks.len() * 2);
         for block_index in 0..self.blocks.len() {
