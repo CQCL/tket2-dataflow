@@ -1,8 +1,8 @@
 use crate::bit_vector::BitVector;
-use std::fmt;
-use std::{cmp::min, fmt::Display};
-use std::iter::zip;
 use itertools::{interleave, Itertools};
+use std::fmt;
+use std::iter::zip;
+use std::{cmp::min, fmt::Display};
 
 #[derive(Debug, Clone)]
 pub struct SymplecticTableau {
@@ -18,7 +18,6 @@ pub struct SymplecticTableau {
 
     // Keep signs in a single vector
     pub signs: BitVector,
-
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +77,7 @@ impl SymplecticTableau {
     pub fn append_s(&mut self, qubit: usize) {
         for (i, xv) in self.x.iter().enumerate() {
             if xv.get(qubit) {
-                let zv : &mut BitVector = self.z.get_mut(i).unwrap();
+                let zv: &mut BitVector = self.z.get_mut(i).unwrap();
                 if zv.get(qubit) {
                     self.signs.xor_bit(i);
                 }
@@ -90,7 +89,7 @@ impl SymplecticTableau {
     pub fn append_v(&mut self, qubit: usize) {
         for (i, zv) in self.z.iter().enumerate() {
             if zv.get(qubit) {
-                let xv : &mut BitVector = self.x.get_mut(i).unwrap();
+                let xv: &mut BitVector = self.x.get_mut(i).unwrap();
                 if !xv.get(qubit) {
                     self.signs.xor_bit(i);
                 }
@@ -135,7 +134,7 @@ impl SymplecticTableau {
             }
         }
     }
-    
+
     pub fn append_cy(&mut self, ctrl: usize, trgt: usize) {
         for (i, (zv, xv)) in zip(self.z.iter_mut(), self.x.iter_mut()).enumerate() {
             let zc = zv.get(ctrl);
@@ -239,8 +238,7 @@ impl SymplecticTableau {
                 self.signs.xor_bit(self.nb_stabs);
             }
             None
-        }
-        else {
+        } else {
             // Overwrite with last stabilizer
             self.z[to_delete] = self.z.pop().unwrap();
             self.x[to_delete] = self.x.pop().unwrap();
@@ -254,7 +252,7 @@ impl SymplecticTableau {
             Some(self.nb_stabs)
         }
     }
-    
+
     // Removes a qubit from the tableau
     // If the qubit to be removed was the last one, returns None
     // Otherwise, in order to keep things dense, swap with the last qubit before removing; returns the index of the last qubit, i.e. the old index that is now at to_delete
@@ -270,8 +268,7 @@ impl SymplecticTableau {
             }
             // BitVector has no record of the number of bits it contains, so we can just leave the bits set as 0
             None
-        }
-        else {
+        } else {
             // If any stabilizers involve the qubit, we cannot delete
             // Move any value from the last qubit to to_delete and reset the last element in the BitVector so it may be safely reused later
             for zv in self.z.iter_mut() {
@@ -353,11 +350,12 @@ impl SymplecticTableau {
         }
     }
 
-    pub fn all_columns(& self) -> Vec<(usize, PauliXZ)> {
+    pub fn all_columns(&self) -> Vec<(usize, PauliXZ)> {
         interleave(
             (0..self.nb_stabs).map(|c| (c, PauliXZ::X)),
-            (0..self.nb_stabs).map(|c| (c, PauliXZ::Z))
-        ).collect_vec()
+            (0..self.nb_stabs).map(|c| (c, PauliXZ::Z)),
+        )
+        .collect_vec()
     }
 
     // Call echelon to minimise the number of rows with non-zero components in the given columns, then remove those rows with such non-zero components
@@ -399,7 +397,7 @@ impl SymplecticTableau {
 
     // Apply row combinations to leave at most one row anticommuting with the target Pauli string, and remove it
     pub fn project_commuting_with(&mut self, z: &BitVector, x: &BitVector) {
-        let mut anticommuting_stab : Option<usize> = None;
+        let mut anticommuting_stab: Option<usize> = None;
         for i in 0..self.nb_stabs {
             if self.anticommutes_with(i, z, x) {
                 match anticommuting_stab {
@@ -425,7 +423,11 @@ impl SymplecticTableau {
         let mut l0_tab = left.clone();
         for i in 0..right.nb_stabs {
             lr_tab.add_stab(right.z[i].clone(), right.x[i].clone(), right.signs.get(i));
-            l0_tab.add_stab(BitVector::new(left.nb_qubits), BitVector::new(left.nb_qubits), false);
+            l0_tab.add_stab(
+                BitVector::new(left.nb_qubits),
+                BitVector::new(left.nb_qubits),
+                false,
+            );
         }
         // Perform simultaneous row combinations to convert lr_tab into row echelon form (no need for reduced row echelon)
         let mut pivot_stab = 0;
@@ -446,7 +448,7 @@ impl SymplecticTableau {
             }
             // Eliminate entries from lower rows
             if pivot_found {
-                for i in (pivot_stab+1)..lr_tab.nb_stabs {
+                for i in (pivot_stab + 1)..lr_tab.nb_stabs {
                     if lr_tab.x[i].get(q) {
                         lr_tab.stab_mult(pivot_stab, i, 0);
                         l0_tab.stab_mult(pivot_stab, i, 0);
@@ -470,7 +472,7 @@ impl SymplecticTableau {
             }
             // Eliminate entries from lower rows
             if pivot_found {
-                for i in (pivot_stab+1)..lr_tab.nb_stabs {
+                for i in (pivot_stab + 1)..lr_tab.nb_stabs {
                     if lr_tab.z[i].get(q) {
                         lr_tab.stab_mult(pivot_stab, i, 0);
                         l0_tab.stab_mult(pivot_stab, i, 0);
@@ -483,12 +485,17 @@ impl SymplecticTableau {
         // Rather than remove rows from l0_tab, since <half will remain we just copy the good ones into a new tab
         let mut res_tab = SymplecticTableau::new(l0_tab.nb_qubits);
         for i in pivot_stab..l0_tab.nb_stabs {
-            res_tab.add_stab(l0_tab.z[i].clone(), l0_tab.x[i].clone(), l0_tab.signs.get(i));
+            res_tab.add_stab(
+                l0_tab.z[i].clone(),
+                l0_tab.x[i].clone(),
+                l0_tab.signs.get(i),
+            );
         }
-        for i in 0..res_tab.nb_stabs { assert_eq!(res_tab.z[i].blocks.len(), 1); }
+        for i in 0..res_tab.nb_stabs {
+            assert_eq!(res_tab.z[i].blocks.len(), 1);
+        }
         res_tab
     }
-
 }
 
 impl Display for SymplecticTableau {
@@ -497,8 +504,7 @@ impl Display for SymplecticTableau {
             let mut pauli_str = String::new();
             if self.signs.get(i) {
                 pauli_str.push('-');
-            }
-            else {
+            } else {
                 pauli_str.push('+');
             }
             for q in 0..self.nb_qubits {

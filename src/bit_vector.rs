@@ -18,37 +18,40 @@ impl BitBlock {
     #[cfg(target_feature = "avx2")]
     fn constant(a: i32) -> Self {
         BitBlock {
-            inner: unsafe { std::arch::x86_64::_mm256_set1_epi32(a) }
+            inner: unsafe { std::arch::x86_64::_mm256_set1_epi32(a) },
         }
     }
 
     #[cfg(target_feature = "neon")]
     fn constant(a: i32) -> Self {
         BitBlock {
-            inner: unsafe { [std::arch::aarch64::vdupq_n_s32(a); 2] }
+            inner: unsafe { [std::arch::aarch64::vdupq_n_s32(a); 2] },
         }
     }
 
     // #[cfg(not(target_feature = "avx2"))]
     #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
     fn constant(a: i32) -> Self {
-        BitBlock {
-            inner: [a; 8]
-        }
+        BitBlock { inner: [a; 8] }
     }
 
     #[cfg(target_feature = "avx2")]
     fn load(arr: &BitLanes) -> Self {
         BitBlock {
             // SAFETY: BitLanes is 32-byte aligned
-            inner: unsafe { std::arch::x86_64::_mm256_load_si256(arr.0.as_ptr() as *const _) }
+            inner: unsafe { std::arch::x86_64::_mm256_load_si256(arr.0.as_ptr() as *const _) },
         }
     }
 
     #[cfg(target_feature = "neon")]
     fn load(arr: &BitLanes) -> Self {
         BitBlock {
-            inner: unsafe { [std::arch::aarch64::vld1q_s32(&arr.0[0]), std::arch::aarch64::vld1q_s32(&arr.0[4])] }
+            inner: unsafe {
+                [
+                    std::arch::aarch64::vld1q_s32(&arr.0[0]),
+                    std::arch::aarch64::vld1q_s32(&arr.0[4]),
+                ]
+            },
         }
     }
 
@@ -56,21 +59,21 @@ impl BitBlock {
     #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
     fn load(arr: &BitLanes) -> Self {
         BitBlock {
-            inner: arr.0.clone()
+            inner: arr.0.clone(),
         }
     }
 
     #[cfg(target_feature = "avx2")]
     fn zero() -> Self {
         BitBlock {
-            inner: unsafe { std::arch::x86_64::_mm256_setzero_si256() }
+            inner: unsafe { std::arch::x86_64::_mm256_setzero_si256() },
         }
     }
 
     #[cfg(target_feature = "neon")]
     fn zero() -> Self {
         BitBlock::constant(0)
-    }   
+    }
 
     // #[cfg(not(target_feature = "avx2"))]
     #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
@@ -82,7 +85,9 @@ impl BitBlock {
     fn extract(&self) -> [i32; 8] {
         let mut arr = BitLanes([0; 8]);
         // SAFETY: BitLanes is 32-byte aligned
-        unsafe { std::arch::x86_64::_mm256_store_si256(arr.0.as_mut_ptr() as *mut _, self.inner); }
+        unsafe {
+            std::arch::x86_64::_mm256_store_si256(arr.0.as_mut_ptr() as *mut _, self.inner);
+        }
         arr.0
     }
 
@@ -91,7 +96,8 @@ impl BitBlock {
         let mut arr = BitLanes([0; 8]);
         unsafe {
             std::arch::aarch64::vst1q_s32(arr.0.as_mut_ptr(), self.inner[0]); // Store first half
-            std::arch::aarch64::vst1q_s32(arr.0.as_mut_ptr().add(4), self.inner[1]); // Store second half
+            std::arch::aarch64::vst1q_s32(arr.0.as_mut_ptr().add(4), self.inner[1]);
+            // Store second half
         }
         arr.0
     }
@@ -135,7 +141,6 @@ impl std::ops::BitAndAssign for BitBlock {
         self.inner[0] = unsafe { std::arch::aarch64::vandq_s32(self.inner[0], rhs.inner[0]) };
         self.inner[1] = unsafe { std::arch::aarch64::vandq_s32(self.inner[1], rhs.inner[1]) };
     }
-
 
     // #[cfg(not(target_feature = "avx2"))]
     #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
@@ -230,7 +235,9 @@ impl BitVector {
             let block = self.extract_block(i);
             for j in 0..8 {
                 for k in 0..32 {
-                    if block[j] & (1 << k) != 0 { return i * BitVector::BLOCK_SIZE + j * BitVector::LANE_SIZE + k; }
+                    if block[j] & (1 << k) != 0 {
+                        return i * BitVector::BLOCK_SIZE + j * BitVector::LANE_SIZE + k;
+                    }
                 }
             }
         }
@@ -244,9 +251,13 @@ impl BitVector {
             let block = self.extract_block(i);
             for j in 0..8 {
                 for k in 0..32 {
-                    if block[j] & (1 << k) != 0 { vec.push(index); }
+                    if block[j] & (1 << k) != 0 {
+                        vec.push(index);
+                    }
                     index += 1;
-                    if index >= nb_bits { return vec; }
+                    if index >= nb_bits {
+                        return vec;
+                    }
                 }
             }
         }
@@ -271,7 +282,7 @@ impl BitVector {
             self.blocks[i] ^= BitBlock::constant(a);
         }
     }
-    
+
     pub fn extend_vec(&mut self, vec: Vec<bool>, nb_bits: usize) {
         let mut bit = nb_bits;
         let mut block_index = bit / BitVector::BLOCK_SIZE;
@@ -322,9 +333,8 @@ impl BitVector {
                     for i in 0..nb_bits {
                         vec.push(arr[j] & (1 << i) != 0);
                     }
-                    return vec
-                }
-                else {
+                    return vec;
+                } else {
                     for i in 0..32 {
                         vec.push(arr[j] & (1 << i) != 0);
                     }
@@ -346,7 +356,7 @@ impl BitVector {
             for k in 0..2 {
                 let mut integer: i128 = 0;
                 for j in 0..4 {
-                    integer ^= (arr[k*4 + j] as u32 as i128) << (32 * j);
+                    integer ^= (arr[k * 4 + j] as u32 as i128) << (32 * j);
                 }
                 vec.push(integer);
             }
