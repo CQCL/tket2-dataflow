@@ -1,3 +1,6 @@
+#[cfg(target_feature = "neon")]
+use std::hash::{Hash, Hasher};
+
 #[repr(align(32))]
 struct BitLanes([i32; 8]);
 
@@ -13,6 +16,37 @@ pub struct BitBlock {
     #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
     inner: [i32; 8],
 }
+
+impl Hash for BitBlock {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for int32 in self.extract() {
+            int32.hash(state);
+        }
+    }
+}
+
+impl PartialEq for BitBlock {
+    #[cfg(target_feature = "avx2")]
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
+    #[cfg(target_feature = "neon")]
+    fn eq(&self, other: &Self) -> bool {
+        self.extract()
+            .iter()
+            .zip(other.extract().iter())
+            .all(|(l, r)| l == r)
+    }
+
+    // #[cfg(not(target_feature = "avx2"))]
+    #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.iter().zip(other.iter()).all(|(l, r)| l == r)
+    }
+}
+
+impl Eq for BitBlock {}
 
 impl BitBlock {
     #[cfg(target_feature = "avx2")]
@@ -151,7 +185,7 @@ impl std::ops::BitAndAssign for BitBlock {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct BitVector {
     pub blocks: Vec<BitBlock>,
 }

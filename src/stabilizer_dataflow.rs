@@ -17,7 +17,7 @@ use tket::hugr::extension::simple_op::MakeExtensionOp;
 use tket::TketOp;
 
 /// Sets behaviour for function calls in dataflow analysis
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum FunctionOpacity {
     /// Function calls are completely opaque and admit no information across them
     Opaque,
@@ -48,14 +48,14 @@ pub enum DataflowPoint<N: Copy + Eq + Hash> {
 
 pub struct StabilizerDataflow<H: HugrView> {
     /// Relational dataflow value captured as a set of stabilizer relations on the Choi-state of the circuit skeleton
-    tab: SymplecticTableau,
+    pub(crate) tab: SymplecticTableau,
     /// Maps from wires of the program to columns of the tableau. We separately need to track columns for:
     /// - Each input qubit (indexed by OutgoingPorts of the unique Input node)
     /// - Each output qubit (indexed by IncomingPorts of the unique Output node)
     /// - A frontier that moves forward through the program (eventually becoming the output qubits and being removed from here)
     /// - For any internal non-Clifford (or opaque) node, we use columns for each input and output qubit separately; for nodes with stabilizers across them (e.g. Rz has Z_i Z_o), we impose these via projections on the tableau rather than reducing the number of qubits used as this allows every node kind to be handled identically and preventing more tableau management from column elimination
     /// - For any hierarchical node, we use additional columns for each input and output port within their internal representation that we compose to "internal" columns here by projections on the tableau, again so we don't fuss with column elimination
-    q_index_map: BiHashMap<DataflowPoint<H::Node>, usize>,
+    pub(crate) q_index_map: BiHashMap<DataflowPoint<H::Node>, usize>,
 }
 
 impl<H: HugrView> Clone for StabilizerDataflow<H> {
@@ -813,7 +813,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
 
 // For any control-flow region or hierarchical node, store the analysis for its internal calculations
 // For TailLoop and function calls, this is the summary of the body and not of the invariants or projecting away interior information
-pub struct SDFAnalysis<H: HugrView>(HashMap<H::Node, StabilizerDataflow<H>>);
+pub struct SDFAnalysis<H: HugrView>(pub(crate) HashMap<H::Node, StabilizerDataflow<H>>);
 
 impl<H: HugrView> SDFAnalysis<H> {
     pub fn run_hugr(hugr: &H, fun_op: &FunctionOpacity) -> SDFAnalysis<H> {
@@ -1230,7 +1230,6 @@ mod test {
         let builder = FunctionBuilder::new("empty", endo_sig(vec![])).unwrap();
         let hugr = builder.finish_hugr().unwrap();
         let analysis = SDFAnalysis::run_hugr(&hugr, &FunctionOpacity::Opaque);
-        println!("{:?}", analysis.0.keys());
         let summary = analysis
             .0
             .get(&hugr.first_child(hugr.module_root()).unwrap())

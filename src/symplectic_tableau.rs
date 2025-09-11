@@ -20,7 +20,7 @@ pub struct SymplecticTableau {
     pub signs: BitVector,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PauliXZ {
     X,
     Z,
