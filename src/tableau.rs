@@ -22,7 +22,7 @@ impl Tableau {
         }
     }
 
-     fn init_z(nb_qubits: usize) -> Vec<BitVector> {
+    fn init_z(nb_qubits: usize) -> Vec<BitVector> {
         let mut vec = Vec::new();
         for i in 0..nb_qubits {
             let mut bv = BitVector::new(nb_qubits << 1);
@@ -32,7 +32,7 @@ impl Tableau {
         vec
     }
 
-     fn init_x(nb_qubits: usize) -> Vec<BitVector> {
+    fn init_x(nb_qubits: usize) -> Vec<BitVector> {
         let mut vec = Vec::new();
         for i in 0..nb_qubits {
             let mut bv = BitVector::new(nb_qubits << 1);
@@ -72,7 +72,7 @@ impl Tableau {
     }
 
     pub fn append_cx(&mut self, qubits: Vec<usize>) {
-        let mut a =  self.z[qubits[0]].clone();
+        let mut a = self.z[qubits[0]].clone();
         a.negate();
         a.xor(&self.x[qubits[1]]);
         a.and(&self.z[qubits[1]]);
@@ -98,7 +98,7 @@ impl Tableau {
         let mut c = Vec::new();
         for i in 0..self.nb_qubits {
             if let Some(index) = tab.x.iter().position(|x| x.get(i)) {
-                for j in (i+1)..self.nb_qubits {
+                for j in (i + 1)..self.nb_qubits {
                     if tab.x[j].get(i) && j != index {
                         tab.append_cx(vec![index, j]);
                         c.push((TketOp::CX, vec![index, j]));
@@ -155,7 +155,9 @@ impl Tableau {
             let mut c2 = Vec::new();
             for (gate, qubits) in c.into_iter().rev() {
                 c2.push((gate, qubits.to_vec()));
-                if gate == TketOp::S { c2.push((TketOp::Z, qubits.to_vec())); }
+                if gate == TketOp::S {
+                    c2.push((TketOp::Z, qubits.to_vec()));
+                }
             }
             return c2;
         }
@@ -178,7 +180,7 @@ impl TableauColumnMajor {
         }
     }
 
-     fn init_stabs(nb_qubits: usize) -> Vec<PauliProduct> {
+    fn init_stabs(nb_qubits: usize) -> Vec<PauliProduct> {
         let mut vec = Vec::new();
         for i in 0..nb_qubits {
             let mut bv = BitVector::new(nb_qubits);
@@ -188,7 +190,7 @@ impl TableauColumnMajor {
         vec
     }
 
-     fn init_destabs(nb_qubits: usize) -> Vec<PauliProduct> {
+    fn init_destabs(nb_qubits: usize) -> Vec<PauliProduct> {
         let mut vec = Vec::new();
         for i in 0..nb_qubits {
             let mut bv = BitVector::new(nb_qubits);
@@ -232,8 +234,8 @@ impl TableauColumnMajor {
         // let mut c = RestrictedSubcircuit::new(tab.nb_qubits, HashSet::new());
         let mut c = Vec::new();
         for i in 0..tab.nb_qubits {
-            if let Some(index) = tab.stabs.iter().position(|p| p.x.get(i) ) {
-                for j in (i+1)..tab.nb_qubits {
+            if let Some(index) = tab.stabs.iter().position(|p| p.x.get(i)) {
+                for j in (i + 1)..tab.nb_qubits {
                     if tab.stabs[j].x.get(i) && j != index {
                         tab.prepend_cx(vec![index, j]);
                         // c.gates.push((TketOp::CX, vec![index, j]));
@@ -310,9 +312,11 @@ impl TableauColumnMajor {
             let mut c2 = Vec::new();
             for (gate, qubits) in c.into_iter().rev() {
                 c2.push((gate, qubits.to_vec()));
-                if gate == TketOp::S { c2.push((TketOp::Z, qubits.to_vec())); }
+                if gate == TketOp::S {
+                    c2.push((TketOp::Z, qubits.to_vec()));
+                }
             }
-            return c2;       
+            return c2;
         }
         c
     }

@@ -82,7 +82,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 q_ind_map.insert(DataflowPoint::Input(out), 2 * n_in_qubits);
                 let (next, next_p) = hugr.single_linked_input(inp, out).unwrap();
                 q_ind_map.insert(DataflowPoint::Frontier(next, next_p), 2 * n_in_qubits + 1);
-                n_in_qubits = n_in_qubits + 1;
+                n_in_qubits += 1;
             }
         }
         let mut tab = SymplecticTableau::new(2 * n_in_qubits);
@@ -97,7 +97,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             tab.add_stab(ii, BitVector::new(2 * n_in_qubits), false);
         }
         Self {
-            tab: tab,
+            tab,
             q_index_map: q_ind_map,
         }
     }
@@ -817,9 +817,7 @@ pub struct SDFAnalysis<H: HugrView>(pub(crate) HashMap<H::Node, StabilizerDatafl
 
 impl<H: HugrView> SDFAnalysis<H> {
     pub fn run_hugr(hugr: &H, fun_op: &FunctionOpacity) -> SDFAnalysis<H> {
-        let mut res = SDFAnalysis {
-            0: HashMap::default(),
-        };
+        let mut res = SDFAnalysis(HashMap::default());
         for n in hugr.nodes() {
             if OpTag::DataflowParent.is_superset(hugr.get_optype(n).tag())
                 && !res.0.contains_key(&n)
@@ -943,7 +941,7 @@ impl<H: HugrView> SDFAnalysis<H> {
                     DataflowPoint::Input(OutgoingPort::from(in_port.index())),
                     n_unified_qbs,
                 );
-                n_unified_qbs = n_unified_qbs + 1;
+                n_unified_qbs += 1;
             }
         }
         for out_port in sig.output_ports() {
@@ -952,7 +950,7 @@ impl<H: HugrView> SDFAnalysis<H> {
                     DataflowPoint::Output(IncomingPort::from(out_port.index())),
                     n_unified_qbs,
                 );
-                n_unified_qbs = n_unified_qbs + 1;
+                n_unified_qbs += 1;
             }
         }
         let mut summary: Option<StabilizerDataflow<H>> = None;

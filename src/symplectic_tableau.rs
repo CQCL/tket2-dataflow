@@ -29,7 +29,7 @@ pub enum PauliXZ {
 impl SymplecticTableau {
     pub fn new(nb_qubits: usize) -> Self {
         SymplecticTableau {
-            nb_qubits: nb_qubits,
+            nb_qubits,
             nb_stabs: 0,
             z: vec![],
             x: vec![],
@@ -261,10 +261,10 @@ impl SymplecticTableau {
         if to_delete == self.nb_qubits {
             // If any stabilizers involve the qubit, we cannot delete
             for zv in self.z.iter() {
-                assert_eq!(zv.get(self.nb_qubits), false);
+                assert!(!zv.get(self.nb_qubits));
             }
             for xv in self.x.iter() {
-                assert_eq!(xv.get(self.nb_qubits), false);
+                assert!(!xv.get(self.nb_qubits));
             }
             // BitVector has no record of the number of bits it contains, so we can just leave the bits set as 0
             None
@@ -272,14 +272,14 @@ impl SymplecticTableau {
             // If any stabilizers involve the qubit, we cannot delete
             // Move any value from the last qubit to to_delete and reset the last element in the BitVector so it may be safely reused later
             for zv in self.z.iter_mut() {
-                assert_eq!(zv.get(to_delete), false);
+                assert!(!zv.get(to_delete));
                 if zv.get(self.nb_qubits) {
                     zv.xor_bit(to_delete);
                     zv.xor_bit(self.nb_qubits);
                 }
             }
             for xv in self.x.iter_mut() {
-                assert_eq!(xv.get(to_delete), false);
+                assert!(!xv.get(to_delete));
                 if xv.get(self.nb_qubits) {
                     xv.xor_bit(to_delete);
                     xv.xor_bit(self.nb_qubits);
@@ -410,8 +410,8 @@ impl SymplecticTableau {
                 }
             }
         }
-        if anticommuting_stab.is_some() {
-            self.delete_stab(anticommuting_stab.unwrap());
+        if let Some(stab) = anticommuting_stab {
+            self.delete_stab(stab);
         }
     }
 
@@ -523,7 +523,7 @@ impl Display for SymplecticTableau {
                     }
                 }
             }
-            write!(f, "{}\n", pauli_str)?;
+            writeln!(f, "{}", pauli_str)?;
         }
         Ok(())
     }

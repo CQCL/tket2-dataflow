@@ -9,11 +9,7 @@ pub struct PauliProduct {
 
 impl PauliProduct {
     pub fn new(z: BitVector, x: BitVector, sign: bool) -> Self {
-        PauliProduct {
-            z,
-            x,
-            sign,
-        }
+        PauliProduct { z, x, sign }
     }
 
     pub fn pauli_product_mult(&mut self, p: &PauliProduct) {
@@ -27,6 +23,6 @@ impl PauliProduct {
         x1z2.xor(&self.x);
         x1z2.xor(&self.z);
         x1z2.and(&ac);
-        self.sign ^= p.sign ^ (((ac.popcount() + 2*x1z2.popcount()) % 4) > 1);
+        self.sign ^= p.sign ^ (((ac.popcount() + 2 * x1z2.popcount()) % 4) > 1);
     }
 }

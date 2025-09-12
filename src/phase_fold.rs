@@ -152,11 +152,11 @@ pub fn phase_fold<H: HugrMut>(hugr: &mut H, settings: &PhaseFoldSettings) {
                 // If settings.preserve_measures==false, we can also remove all measures
                 for (col, polarity) in bucket {
                     let DataflowPoint::InternalIn(node, _) =
-                        summary.q_index_map.get_by_right(&col).unwrap()
+                        summary.q_index_map.get_by_right(col).unwrap()
                     else {
                         unreachable!();
                     };
-                    if measure_set.contains(&col) {
+                    if measure_set.contains(col) {
                         if !settings.preserve_measures {
                             let (q_pred, q_pred_port) = hugr
                                 .single_linked_output(*node, IncomingPort::from(0))
@@ -193,7 +193,7 @@ pub fn phase_fold<H: HugrMut>(hugr: &mut H, settings: &PhaseFoldSettings) {
                             }
                             hugr.remove_node(*node);
                         }
-                    } else if measurefree_set.contains(&col) {
+                    } else if measurefree_set.contains(col) {
                         if !settings.preserve_measures {
                             let (q_pred, q_pred_port) = hugr
                                 .single_linked_output(*node, IncomingPort::from(0))

@@ -213,12 +213,12 @@ impl BitVector {
         let mut block_index = 0;
         let mut index = 0;
         for v in vec {
-            let mut val = v.clone();
+            let mut val = v;
             for i in 0..4 {
                 arr.0[index] = val as u32 as i32;
                 index += 1;
                 if i < 3 {
-                    val = val >> 32;
+                    val >>= 32;
                 }
             }
             if index == 8 {
@@ -248,9 +248,9 @@ impl BitVector {
 
     pub fn xor_bit(&mut self, mut bit: usize) {
         let block_index = bit / BitVector::BLOCK_SIZE;
-        bit = bit % BitVector::BLOCK_SIZE;
+        bit %= BitVector::BLOCK_SIZE;
         let lane_index = bit / BitVector::LANE_SIZE;
-        bit = bit % BitVector::LANE_SIZE;
+        bit %= BitVector::LANE_SIZE;
         let mut arr = BitLanes([0; BitVector::LANES]);
         arr.0[lane_index] ^= 1 << bit;
         self.blocks[block_index] ^= BitBlock::load(&arr);
@@ -258,18 +258,18 @@ impl BitVector {
 
     pub fn get(&self, mut bit: usize) -> bool {
         let block_index = bit / BitVector::BLOCK_SIZE;
-        bit = bit % BitVector::BLOCK_SIZE;
+        bit %= BitVector::BLOCK_SIZE;
         let lane_index = bit / 32;
-        bit = bit % 32;
+        bit %= 32;
         self.extract_block(block_index)[lane_index] & (1 << bit) != 0
     }
 
     pub fn get_first_one(&self) -> usize {
         for i in 0..self.blocks.len() {
             let block = self.extract_block(i);
-            for j in 0..8 {
+            for (j, entry) in block.iter().enumerate() {
                 for k in 0..32 {
-                    if block[j] & (1 << k) != 0 {
+                    if entry & (1 << k) != 0 {
                         return i * BitVector::BLOCK_SIZE + j * BitVector::LANE_SIZE + k;
                     }
                 }
@@ -283,9 +283,9 @@ impl BitVector {
         let mut vec = Vec::new();
         for i in 0..self.blocks.len() {
             let block = self.extract_block(i);
-            for j in 0..8 {
+            for entry in block {
                 for k in 0..32 {
-                    if block[j] & (1 << k) != 0 {
+                    if entry & (1 << k) != 0 {
                         vec.push(index);
                     }
                     index += 1;
@@ -320,9 +320,9 @@ impl BitVector {
     pub fn extend_vec(&mut self, vec: Vec<bool>, nb_bits: usize) {
         let mut bit = nb_bits;
         let mut block_index = bit / BitVector::BLOCK_SIZE;
-        bit = bit % BitVector::BLOCK_SIZE;
+        bit %= BitVector::BLOCK_SIZE;
         let mut lane_index = bit / BitVector::LANE_SIZE;
-        bit = bit % BitVector::LANE_SIZE;
+        bit %= BitVector::LANE_SIZE;
         let mut arr = BitLanes([0; BitVector::LANES]);
 
         for val in vec {
@@ -349,9 +349,9 @@ impl BitVector {
         let mut vec: Vec<bool> = Vec::with_capacity(self.blocks.len() * BitVector::BLOCK_SIZE);
         for block_index in 0..self.blocks.len() {
             let arr = self.extract_block(block_index);
-            for j in 0..8 {
+            for entry in arr {
                 for i in 0..32 {
-                    vec.push(arr[j] & (1 << i) != 0);
+                    vec.push(entry & (1 << i) != 0);
                 }
             }
         }
@@ -362,15 +362,15 @@ impl BitVector {
         let mut vec: Vec<bool> = Vec::with_capacity(nb_bits);
         for block_index in 0..self.blocks.len() {
             let arr = self.extract_block(block_index);
-            for j in 0..8 {
+            for entry in arr {
                 if nb_bits < 32 {
                     for i in 0..nb_bits {
-                        vec.push(arr[j] & (1 << i) != 0);
+                        vec.push(entry & (1 << i) != 0);
                     }
                     return vec;
                 } else {
                     for i in 0..32 {
-                        vec.push(arr[j] & (1 << i) != 0);
+                        vec.push(entry & (1 << i) != 0);
                     }
                     nb_bits -= 32;
                 }
@@ -402,8 +402,8 @@ impl BitVector {
         let mut sum: i32 = 0;
         for block_index in 0..self.blocks.len() {
             let arr = self.extract_block(block_index);
-            for j in 0..8 {
-                sum += arr[j].count_ones() as i32;
+            for entry in arr {
+                sum += entry.count_ones() as i32;
             }
         }
         sum
