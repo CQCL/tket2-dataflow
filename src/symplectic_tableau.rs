@@ -58,6 +58,15 @@ impl SymplecticTableau {
         qb_base
     }
 
+    pub fn add_qubit(&mut self) -> usize {
+        self.add_qubits(1)
+    }
+
+    pub fn add_n_qubits<const N: usize>(&mut self) -> [usize; N] {
+        let col = self.add_qubits(N);
+        (col..col + N).collect_array().unwrap()
+    }
+
     pub fn append_z(&mut self, qubit: usize) {
         for (i, xv) in self.x.iter().enumerate() {
             if xv.get(qubit) {

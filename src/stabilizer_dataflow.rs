@@ -138,7 +138,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     /// Helper method for updating the tableau for a node operation.
-    /// 
+    ///
     /// Looks up the tableau columns corresponding to the node inputs and updates the
     /// frontier with the node outputs provided by the `go` closure.
     fn apply_op_with<const IN: usize, const OUT: usize>(
@@ -211,10 +211,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::CRz => {
                 self.apply_op_with(hugr, node, |tab, q_index_map, [col_in0, col_in1]| {
-                    let col_out0: usize = tab.add_qubits(4);
-                    let col_out1: usize = col_out0 + 1;
-                    let col_front0: usize = col_out0 + 2;
-                    let col_front1: usize = col_out0 + 3;
+                    let [col_out0, col_out1, col_front0, col_front1] = tab.add_n_qubits();
                     // Add rows for identities col_out0/1--col_front0/1
                     let mut out_front_0 = BitVector::new(tab.nb_qubits);
                     out_front_0.xor_bit(col_out0);
@@ -258,8 +255,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::T | TketOp::Tdg | TketOp::Rz | TketOp::Measure => {
                 self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
-                    let col_out: usize = tab.add_qubits(2);
-                    let col_front: usize = col_out + 1;
+                    let [col_out, col_front] = tab.add_n_qubits();
                     // Add rows for identity col_out--col_front
                     let mut out_front = BitVector::new(tab.nb_qubits);
                     out_front.xor_bit(col_out);
@@ -312,8 +308,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::Rx => {
                 self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
-                    let col_out: usize = tab.add_qubits(2);
-                    let col_front: usize = col_out + 1;
+                    let [col_out, col_front] = tab.add_n_qubits();
                     // Add rows for identity col_out--col_front
                     let mut out_front = BitVector::new(tab.nb_qubits);
                     out_front.xor_bit(col_out);
@@ -339,8 +334,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::Ry => {
                 self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
-                    let col_out: usize = tab.add_qubits(2);
-                    let col_front: usize = col_out + 1;
+                    let [col_out, col_front] = tab.add_n_qubits();
                     // Add rows for identity col_out--col_front
                     let mut out_front = BitVector::new(tab.nb_qubits);
                     out_front.xor_bit(col_out);
@@ -369,12 +363,8 @@ impl<H: HugrView> StabilizerDataflow<H> {
                     hugr,
                     node,
                     |tab, q_index_map, [col_in0, col_in1, col_in2]| {
-                        let col_out0: usize = tab.add_qubits(6);
-                        let col_out1: usize = col_out0 + 1;
-                        let col_out2: usize = col_out0 + 2;
-                        let col_front0: usize = col_out0 + 3;
-                        let col_front1: usize = col_out0 + 4;
-                        let col_front2: usize = col_out0 + 5;
+                        let [col_out0, col_out1, col_out2, col_front0, col_front1, col_front2] =
+                            tab.add_n_qubits();
                         // Add rows for identities col_out0/1/2--col_front0/1/2
                         let mut out_front_0 = BitVector::new(tab.nb_qubits);
                         out_front_0.xor_bit(col_out0);
@@ -446,7 +436,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::QAlloc => {
                 self.apply_op_with(hugr, node, |tab, _, []| {
-                    let col_front: usize = tab.add_qubits(1);
+                    let col_front: usize = tab.add_qubit();
                     // Add row for Z over col_front
                     let mut front_bv = BitVector::new(tab.nb_qubits);
                     front_bv.xor_bit(col_front);
@@ -513,8 +503,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
         // For each Qubit output, create a pair of columns with the identity for internal_out_cols and frontier_cols
         for (p, t) in hugr.out_value_types(node) {
             if t == qb_t() {
-                let col_out = self.tab.add_qubits(2);
-                let col_front = col_out + 1;
+                let [col_out, col_front] = self.tab.add_n_qubits();
                 // Add rows for identity col_out--col_front
                 let mut out_front = BitVector::new(self.tab.nb_qubits);
                 out_front.xor_bit(col_out);
@@ -604,10 +593,9 @@ impl<H: HugrView> StabilizerDataflow<H> {
                     .q_index_map
                     .get_by_left(&DataflowPoint::NestedOut(node, in_port))
                     .unwrap();
-                let internal_col = self.tab.add_qubits(2);
+                let [internal_col, front_col] = self.tab.add_n_qubits();
                 self.q_index_map
                     .insert(DataflowPoint::InternalOut(node, port), internal_col);
-                let front_col = internal_col + 1;
                 let (next_node, next_port) = hugr.single_linked_input(node, port).unwrap();
                 self.q_index_map
                     .insert(DataflowPoint::Frontier(next_node, next_port), front_col);
@@ -889,7 +877,7 @@ impl<H: HugrView> SDFAnalysis<H> {
         // Build q_index_map for target qubit structure
         for (in_port, in_type) in tl.just_inputs.iter().enumerate() {
             if *in_type == qb_t() {
-                let new_col = summary.tab.add_qubits(1);
+                let new_col = summary.tab.add_qubit();
                 summary
                     .q_index_map
                     .insert(DataflowPoint::Input(OutgoingPort::from(in_port)), new_col);
@@ -897,7 +885,7 @@ impl<H: HugrView> SDFAnalysis<H> {
         }
         for (out_port, out_type) in tl.just_outputs.iter().enumerate() {
             if *out_type == qb_t() {
-                let new_col = summary.tab.add_qubits(1);
+                let new_col = summary.tab.add_qubit();
                 summary
                     .q_index_map
                     .insert(DataflowPoint::Output(IncomingPort::from(out_port)), new_col);
@@ -905,14 +893,14 @@ impl<H: HugrView> SDFAnalysis<H> {
         }
         for (io_port, io_type) in tl.rest.iter().enumerate() {
             if *io_type == qb_t() {
-                let first_col = summary.tab.add_qubits(2);
+                let [first_col, second_col] = summary.tab.add_n_qubits();
                 summary.q_index_map.insert(
                     DataflowPoint::Input(OutgoingPort::from(io_port + tl.just_inputs.len())),
                     first_col,
                 );
                 summary.q_index_map.insert(
                     DataflowPoint::Output(IncomingPort::from(io_port + tl.just_outputs.len())),
-                    first_col + 1,
+                    second_col,
                 );
             }
         }
