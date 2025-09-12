@@ -137,527 +137,358 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
     }
 
+    /// Helper method for updating the tableau for a node operation.
+    /// 
+    /// Looks up the tableau columns corresponding to the node inputs and updates the
+    /// frontier with the node outputs provided by the `go` closure.
+    fn apply_op_with<const IN: usize, const OUT: usize>(
+        &mut self,
+        hugr: &H,
+        node: H::Node,
+        go: impl FnOnce(
+            &mut SymplecticTableau,
+            &mut BiHashMap<DataflowPoint<H::Node>, usize>,
+            [usize; IN],
+        ) -> [usize; OUT],
+    ) {
+        // Collect tableau columns for node inputs
+        let in_cols = (0..IN)
+            .map(|i| {
+                self.q_index_map
+                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(i)))
+                    .unwrap()
+                    .1
+            })
+            .collect_array()
+            .unwrap();
+        // Run closure and update frontier with the returned tableau columns
+        let out_cols = go(&mut self.tab, &mut self.q_index_map, in_cols);
+        for (out_port, out_col) in hugr.node_outputs(node).zip(out_cols) {
+            let (next_node, next_port) = hugr.single_linked_input(node, out_port).unwrap();
+            self.q_index_map
+                .insert(DataflowPoint::Frontier(next_node, next_port), out_col);
+        }
+    }
+
+    /// Helper method for updating the tableau for a Clifford operation.
+    fn apply_clifford_with<const N: usize>(
+        &mut self,
+        hugr: &H,
+        node: H::Node,
+        go: impl FnOnce(&mut SymplecticTableau, [usize; N]),
+    ) {
+        self.apply_op_with(hugr, node, |tab, _, cols| {
+            go(tab, cols);
+            // Output columns for Cliffords are the same as the input columns
+            cols
+        });
+    }
+
     fn apply_quantum_gate(&mut self, hugr: &H, node: H::Node, op: TketOp) {
         match op {
             TketOp::H => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_h(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_h(col);
+                });
             }
             TketOp::CX => {
-                let (_, col0) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let (_, col1) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1)))
-                    .unwrap();
-                self.tab.append_cx(col0, col1);
-                let (next_node0, next_port0) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node0, next_port0), col0);
-                let (next_node1, next_port1) = hugr
-                    .single_linked_input(node, OutgoingPort::from(1))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node1, next_port1), col1);
+                self.apply_clifford_with(hugr, node, |tab, [col0, col1]| {
+                    tab.append_cx(col0, col1);
+                });
             }
             TketOp::CY => {
-                let (_, col0) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let (_, col1) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1)))
-                    .unwrap();
-                self.tab.append_s(col1);
-                self.tab.append_z(col1);
-                self.tab.append_cx(col0, col1);
-                self.tab.append_s(col1);
-                let (next_node0, next_port0) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node0, next_port0), col0);
-                let (next_node1, next_port1) = hugr
-                    .single_linked_input(node, OutgoingPort::from(1))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node1, next_port1), col1);
+                self.apply_clifford_with(hugr, node, |tab, [col0, col1]| {
+                    tab.append_s(col1);
+                    tab.append_z(col1);
+                    tab.append_cx(col0, col1);
+                    tab.append_s(col1);
+                });
             }
             TketOp::CZ => {
-                let (_, col0) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let (_, col1) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1)))
-                    .unwrap();
-                self.tab.append_cz(col0, col1);
-                let (next_node0, next_port0) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node0, next_port0), col0);
-                let (next_node1, next_port1) = hugr
-                    .single_linked_input(node, OutgoingPort::from(1))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node1, next_port1), col1);
+                self.apply_clifford_with(hugr, node, |tab, [col0, col1]| {
+                    tab.append_cz(col0, col1);
+                });
             }
             TketOp::CRz => {
-                let (_, col_in0) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let (_, col_in1) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1)))
-                    .unwrap();
-                let col_out0: usize = self.tab.add_qubits(4);
-                let col_out1: usize = col_out0 + 1;
-                let col_front0: usize = col_out0 + 2;
-                let col_front1: usize = col_out0 + 3;
-                // Add rows for identities col_out0/1--col_front0/1
-                let mut out_front_0 = BitVector::new(self.tab.nb_qubits);
-                out_front_0.xor_bit(col_out0);
-                out_front_0.xor_bit(col_front0);
-                self.tab.add_stab(
-                    BitVector::new(self.tab.nb_qubits),
-                    out_front_0.clone(),
-                    false,
-                );
-                self.tab
-                    .add_stab(out_front_0, BitVector::new(self.tab.nb_qubits), false);
-                let mut out_front_1 = BitVector::new(self.tab.nb_qubits);
-                out_front_1.xor_bit(col_out1);
-                out_front_1.xor_bit(col_front1);
-                self.tab.add_stab(
-                    BitVector::new(self.tab.nb_qubits),
-                    out_front_1.clone(),
-                    false,
-                );
-                self.tab
-                    .add_stab(out_front_1, BitVector::new(self.tab.nb_qubits), false);
-                // Add rows for ZZ over col_in0/1--col_out0/1 and project to commuting
-                let mut in_out_0 = BitVector::new(self.tab.nb_qubits);
-                in_out_0.xor_bit(col_in0);
-                in_out_0.xor_bit(col_out0);
-                let mut in_out_1 = BitVector::new(self.tab.nb_qubits);
-                in_out_1.xor_bit(col_in1);
-                in_out_1.xor_bit(col_out1);
-                self.tab
-                    .project_commuting_with(&in_out_0, &BitVector::new(self.tab.nb_qubits));
-                self.tab
-                    .project_commuting_with(&in_out_1, &BitVector::new(self.tab.nb_qubits));
-                self.tab
-                    .add_stab(in_out_0, BitVector::new(self.tab.nb_qubits), false);
-                self.tab
-                    .add_stab(in_out_1, BitVector::new(self.tab.nb_qubits), false);
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(0)),
-                    col_in0,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(1)),
-                    col_in1,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
-                    col_out0,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(1)),
-                    col_out1,
-                );
-                let (next_node0, next_port0) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node0, next_port0), col_front0);
-                let (next_node1, next_port1) = hugr
-                    .single_linked_input(node, OutgoingPort::from(1))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node1, next_port1), col_front1);
+                self.apply_op_with(hugr, node, |tab, q_index_map, [col_in0, col_in1]| {
+                    let col_out0: usize = tab.add_qubits(4);
+                    let col_out1: usize = col_out0 + 1;
+                    let col_front0: usize = col_out0 + 2;
+                    let col_front1: usize = col_out0 + 3;
+                    // Add rows for identities col_out0/1--col_front0/1
+                    let mut out_front_0 = BitVector::new(tab.nb_qubits);
+                    out_front_0.xor_bit(col_out0);
+                    out_front_0.xor_bit(col_front0);
+                    tab.add_stab(BitVector::new(tab.nb_qubits), out_front_0.clone(), false);
+                    tab.add_stab(out_front_0, BitVector::new(tab.nb_qubits), false);
+                    let mut out_front_1 = BitVector::new(tab.nb_qubits);
+                    out_front_1.xor_bit(col_out1);
+                    out_front_1.xor_bit(col_front1);
+                    tab.add_stab(BitVector::new(tab.nb_qubits), out_front_1.clone(), false);
+                    tab.add_stab(out_front_1, BitVector::new(tab.nb_qubits), false);
+                    // Add rows for ZZ over col_in0/1--col_out0/1 and project to commuting
+                    let mut in_out_0 = BitVector::new(tab.nb_qubits);
+                    in_out_0.xor_bit(col_in0);
+                    in_out_0.xor_bit(col_out0);
+                    let mut in_out_1 = BitVector::new(tab.nb_qubits);
+                    in_out_1.xor_bit(col_in1);
+                    in_out_1.xor_bit(col_out1);
+                    tab.project_commuting_with(&in_out_0, &BitVector::new(tab.nb_qubits));
+                    tab.project_commuting_with(&in_out_1, &BitVector::new(tab.nb_qubits));
+                    tab.add_stab(in_out_0, BitVector::new(tab.nb_qubits), false);
+                    tab.add_stab(in_out_1, BitVector::new(tab.nb_qubits), false);
+                    q_index_map.insert(
+                        DataflowPoint::InternalIn(node, IncomingPort::from(0)),
+                        col_in0,
+                    );
+                    q_index_map.insert(
+                        DataflowPoint::InternalIn(node, IncomingPort::from(1)),
+                        col_in1,
+                    );
+                    q_index_map.insert(
+                        DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
+                        col_out0,
+                    );
+                    q_index_map.insert(
+                        DataflowPoint::InternalOut(node, OutgoingPort::from(1)),
+                        col_out1,
+                    );
+                    [col_front0, col_front1]
+                });
             }
             TketOp::T | TketOp::Tdg | TketOp::Rz | TketOp::Measure => {
-                let (_, col_in) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let col_out: usize = self.tab.add_qubits(2);
-                let col_front: usize = col_out + 1;
-                // Add rows for identity col_out--col_front
-                let mut out_front = BitVector::new(self.tab.nb_qubits);
-                out_front.xor_bit(col_out);
-                out_front.xor_bit(col_front);
-                self.tab
-                    .add_stab(BitVector::new(self.tab.nb_qubits), out_front.clone(), false);
-                self.tab
-                    .add_stab(out_front, BitVector::new(self.tab.nb_qubits), false);
-                // Add row for ZZ over col_in--col_out and project to commuting
-                let mut in_out = BitVector::new(self.tab.nb_qubits);
-                in_out.xor_bit(col_in);
-                in_out.xor_bit(col_out);
-                self.tab
-                    .project_commuting_with(&in_out, &BitVector::new(self.tab.nb_qubits));
-                self.tab
-                    .add_stab(in_out, BitVector::new(self.tab.nb_qubits), false);
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(0)),
-                    col_in,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
-                    col_out,
-                );
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col_front);
+                self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
+                    let col_out: usize = tab.add_qubits(2);
+                    let col_front: usize = col_out + 1;
+                    // Add rows for identity col_out--col_front
+                    let mut out_front = BitVector::new(tab.nb_qubits);
+                    out_front.xor_bit(col_out);
+                    out_front.xor_bit(col_front);
+                    tab.add_stab(BitVector::new(tab.nb_qubits), out_front.clone(), false);
+                    tab.add_stab(out_front, BitVector::new(tab.nb_qubits), false);
+                    // Add row for ZZ over col_in--col_out and project to commuting
+                    let mut in_out = BitVector::new(tab.nb_qubits);
+                    in_out.xor_bit(col_in);
+                    in_out.xor_bit(col_out);
+                    tab.project_commuting_with(&in_out, &BitVector::new(tab.nb_qubits));
+                    tab.add_stab(in_out, BitVector::new(tab.nb_qubits), false);
+                    q_index_map.insert(
+                        DataflowPoint::InternalIn(node, IncomingPort::from(0)),
+                        col_in,
+                    );
+                    q_index_map.insert(
+                        DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
+                        col_out,
+                    );
+                    [col_front]
+                });
             }
             TketOp::S => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_s(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_s(col);
+                });
             }
             TketOp::Sdg => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_s(col);
-                self.tab.append_z(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_s(col);
+                    tab.append_z(col);
+                });
             }
             TketOp::X => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_x(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_x(col);
+                });
             }
             TketOp::Y => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_x(col);
-                self.tab.append_z(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_x(col);
+                    tab.append_z(col);
+                });
             }
             TketOp::Z => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_z(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_z(col);
+                });
             }
             TketOp::Rx => {
-                let (_, col_in) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let col_out: usize = self.tab.add_qubits(2);
-                let col_front: usize = col_out + 1;
-                // Add rows for identity col_out--col_front
-                let mut out_front = BitVector::new(self.tab.nb_qubits);
-                out_front.xor_bit(col_out);
-                out_front.xor_bit(col_front);
-                self.tab
-                    .add_stab(BitVector::new(self.tab.nb_qubits), out_front.clone(), false);
-                self.tab
-                    .add_stab(out_front, BitVector::new(self.tab.nb_qubits), false);
-                // Add row for XX over col_in--col_out and project to commuting
-                let mut in_out = BitVector::new(self.tab.nb_qubits);
-                in_out.xor_bit(col_in);
-                in_out.xor_bit(col_out);
-                self.tab
-                    .project_commuting_with(&BitVector::new(self.tab.nb_qubits), &in_out);
-                self.tab
-                    .add_stab(BitVector::new(self.tab.nb_qubits), in_out, false);
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(0)),
-                    col_in,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
-                    col_out,
-                );
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col_front);
+                self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
+                    let col_out: usize = tab.add_qubits(2);
+                    let col_front: usize = col_out + 1;
+                    // Add rows for identity col_out--col_front
+                    let mut out_front = BitVector::new(tab.nb_qubits);
+                    out_front.xor_bit(col_out);
+                    out_front.xor_bit(col_front);
+                    tab.add_stab(BitVector::new(tab.nb_qubits), out_front.clone(), false);
+                    tab.add_stab(out_front, BitVector::new(tab.nb_qubits), false);
+                    // Add row for XX over col_in--col_out and project to commuting
+                    let mut in_out = BitVector::new(tab.nb_qubits);
+                    in_out.xor_bit(col_in);
+                    in_out.xor_bit(col_out);
+                    tab.project_commuting_with(&BitVector::new(tab.nb_qubits), &in_out);
+                    tab.add_stab(BitVector::new(tab.nb_qubits), in_out, false);
+                    q_index_map.insert(
+                        DataflowPoint::InternalIn(node, IncomingPort::from(0)),
+                        col_in,
+                    );
+                    q_index_map.insert(
+                        DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
+                        col_out,
+                    );
+                    [col_front]
+                });
             }
             TketOp::Ry => {
-                let (_, col_in) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let col_out: usize = self.tab.add_qubits(2);
-                let col_front: usize = col_out + 1;
-                // Add rows for identity col_out--col_front
-                let mut out_front = BitVector::new(self.tab.nb_qubits);
-                out_front.xor_bit(col_out);
-                out_front.xor_bit(col_front);
-                self.tab
-                    .add_stab(BitVector::new(self.tab.nb_qubits), out_front.clone(), false);
-                self.tab
-                    .add_stab(out_front, BitVector::new(self.tab.nb_qubits), false);
-                // Add row for -YY (negative because of the partial transpose under the Choi isomorphism) over col_in--col_out and project to commuting
-                let mut in_out = BitVector::new(self.tab.nb_qubits);
-                in_out.xor_bit(col_in);
-                in_out.xor_bit(col_out);
-                self.tab.project_commuting_with(&in_out, &in_out);
-                self.tab.add_stab(in_out.clone(), in_out, true);
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(0)),
-                    col_in,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
-                    col_out,
-                );
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col_front);
+                self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
+                    let col_out: usize = tab.add_qubits(2);
+                    let col_front: usize = col_out + 1;
+                    // Add rows for identity col_out--col_front
+                    let mut out_front = BitVector::new(tab.nb_qubits);
+                    out_front.xor_bit(col_out);
+                    out_front.xor_bit(col_front);
+                    tab.add_stab(BitVector::new(tab.nb_qubits), out_front.clone(), false);
+                    tab.add_stab(out_front, BitVector::new(tab.nb_qubits), false);
+                    // Add row for -YY (negative because of the partial transpose under the Choi isomorphism) over col_in--col_out and project to commuting
+                    let mut in_out = BitVector::new(tab.nb_qubits);
+                    in_out.xor_bit(col_in);
+                    in_out.xor_bit(col_out);
+                    tab.project_commuting_with(&in_out, &in_out);
+                    tab.add_stab(in_out.clone(), in_out, true);
+                    q_index_map.insert(
+                        DataflowPoint::InternalIn(node, IncomingPort::from(0)),
+                        col_in,
+                    );
+                    q_index_map.insert(
+                        DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
+                        col_out,
+                    );
+                    [col_front]
+                });
             }
             TketOp::Toffoli => {
-                let (_, col_in0) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                let (_, col_in1) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(1)))
-                    .unwrap();
-                let (_, col_in2) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(2)))
-                    .unwrap();
-                let col_out0: usize = self.tab.add_qubits(6);
-                let col_out1: usize = col_out0 + 1;
-                let col_out2: usize = col_out0 + 2;
-                let col_front0: usize = col_out0 + 3;
-                let col_front1: usize = col_out0 + 4;
-                let col_front2: usize = col_out0 + 5;
-                // Add rows for identities col_out0/1/2--col_front0/1/2
-                let mut out_front_0 = BitVector::new(self.tab.nb_qubits);
-                out_front_0.xor_bit(col_out0);
-                out_front_0.xor_bit(col_front0);
-                self.tab.add_stab(
-                    BitVector::new(self.tab.nb_qubits),
-                    out_front_0.clone(),
-                    false,
+                self.apply_op_with(
+                    hugr,
+                    node,
+                    |tab, q_index_map, [col_in0, col_in1, col_in2]| {
+                        let col_out0: usize = tab.add_qubits(6);
+                        let col_out1: usize = col_out0 + 1;
+                        let col_out2: usize = col_out0 + 2;
+                        let col_front0: usize = col_out0 + 3;
+                        let col_front1: usize = col_out0 + 4;
+                        let col_front2: usize = col_out0 + 5;
+                        // Add rows for identities col_out0/1/2--col_front0/1/2
+                        let mut out_front_0 = BitVector::new(tab.nb_qubits);
+                        out_front_0.xor_bit(col_out0);
+                        out_front_0.xor_bit(col_front0);
+                        tab.add_stab(BitVector::new(tab.nb_qubits), out_front_0.clone(), false);
+                        tab.add_stab(out_front_0, BitVector::new(tab.nb_qubits), false);
+                        let mut out_front_1 = BitVector::new(tab.nb_qubits);
+                        out_front_1.xor_bit(col_out1);
+                        out_front_1.xor_bit(col_front1);
+                        tab.add_stab(BitVector::new(tab.nb_qubits), out_front_1.clone(), false);
+                        tab.add_stab(out_front_1, BitVector::new(tab.nb_qubits), false);
+                        let mut out_front_2 = BitVector::new(tab.nb_qubits);
+                        out_front_2.xor_bit(col_out2);
+                        out_front_2.xor_bit(col_front2);
+                        tab.add_stab(BitVector::new(tab.nb_qubits), out_front_2.clone(), false);
+                        tab.add_stab(out_front_2, BitVector::new(tab.nb_qubits), false);
+                        // Add rows for ZZ/ZZ/XX over col_in0/1/2--col_out0/1/2 and project to commuting
+                        let mut in_out_0 = BitVector::new(tab.nb_qubits);
+                        in_out_0.xor_bit(col_in0);
+                        in_out_0.xor_bit(col_out0);
+                        let mut in_out_1 = BitVector::new(tab.nb_qubits);
+                        in_out_1.xor_bit(col_in1);
+                        in_out_1.xor_bit(col_out1);
+                        let mut in_out_2 = BitVector::new(tab.nb_qubits);
+                        in_out_2.xor_bit(col_in2);
+                        in_out_2.xor_bit(col_out2);
+                        tab.project_commuting_with(&in_out_0, &BitVector::new(tab.nb_qubits));
+                        tab.project_commuting_with(&in_out_1, &BitVector::new(tab.nb_qubits));
+                        tab.project_commuting_with(&BitVector::new(tab.nb_qubits), &in_out_2);
+                        tab.add_stab(in_out_0, BitVector::new(tab.nb_qubits), false);
+                        tab.add_stab(in_out_1, BitVector::new(tab.nb_qubits), false);
+                        tab.add_stab(BitVector::new(tab.nb_qubits), in_out_2, false);
+                        q_index_map.insert(
+                            DataflowPoint::InternalIn(node, IncomingPort::from(0)),
+                            col_in0,
+                        );
+                        q_index_map.insert(
+                            DataflowPoint::InternalIn(node, IncomingPort::from(1)),
+                            col_in1,
+                        );
+                        q_index_map.insert(
+                            DataflowPoint::InternalIn(node, IncomingPort::from(2)),
+                            col_in2,
+                        );
+                        q_index_map.insert(
+                            DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
+                            col_out0,
+                        );
+                        q_index_map.insert(
+                            DataflowPoint::InternalOut(node, OutgoingPort::from(1)),
+                            col_out1,
+                        );
+                        q_index_map.insert(
+                            DataflowPoint::InternalOut(node, OutgoingPort::from(2)),
+                            col_out2,
+                        );
+                        [col_front0, col_front1, col_front2]
+                    },
                 );
-                self.tab
-                    .add_stab(out_front_0, BitVector::new(self.tab.nb_qubits), false);
-                let mut out_front_1 = BitVector::new(self.tab.nb_qubits);
-                out_front_1.xor_bit(col_out1);
-                out_front_1.xor_bit(col_front1);
-                self.tab.add_stab(
-                    BitVector::new(self.tab.nb_qubits),
-                    out_front_1.clone(),
-                    false,
-                );
-                self.tab
-                    .add_stab(out_front_1, BitVector::new(self.tab.nb_qubits), false);
-                let mut out_front_2 = BitVector::new(self.tab.nb_qubits);
-                out_front_2.xor_bit(col_out2);
-                out_front_2.xor_bit(col_front2);
-                self.tab.add_stab(
-                    BitVector::new(self.tab.nb_qubits),
-                    out_front_2.clone(),
-                    false,
-                );
-                self.tab
-                    .add_stab(out_front_2, BitVector::new(self.tab.nb_qubits), false);
-                // Add rows for ZZ/ZZ/XX over col_in0/1/2--col_out0/1/2 and project to commuting
-                let mut in_out_0 = BitVector::new(self.tab.nb_qubits);
-                in_out_0.xor_bit(col_in0);
-                in_out_0.xor_bit(col_out0);
-                let mut in_out_1 = BitVector::new(self.tab.nb_qubits);
-                in_out_1.xor_bit(col_in1);
-                in_out_1.xor_bit(col_out1);
-                let mut in_out_2 = BitVector::new(self.tab.nb_qubits);
-                in_out_2.xor_bit(col_in2);
-                in_out_2.xor_bit(col_out2);
-                self.tab
-                    .project_commuting_with(&in_out_0, &BitVector::new(self.tab.nb_qubits));
-                self.tab
-                    .project_commuting_with(&in_out_1, &BitVector::new(self.tab.nb_qubits));
-                self.tab
-                    .project_commuting_with(&BitVector::new(self.tab.nb_qubits), &in_out_2);
-                self.tab
-                    .add_stab(in_out_0, BitVector::new(self.tab.nb_qubits), false);
-                self.tab
-                    .add_stab(in_out_1, BitVector::new(self.tab.nb_qubits), false);
-                self.tab
-                    .add_stab(BitVector::new(self.tab.nb_qubits), in_out_2, false);
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(0)),
-                    col_in0,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(1)),
-                    col_in1,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(2)),
-                    col_in2,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(0)),
-                    col_out0,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(1)),
-                    col_out1,
-                );
-                self.q_index_map.insert(
-                    DataflowPoint::InternalOut(node, OutgoingPort::from(2)),
-                    col_out2,
-                );
-                let (next_node0, next_port0) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node0, next_port0), col_front0);
-                let (next_node1, next_port1) = hugr
-                    .single_linked_input(node, OutgoingPort::from(1))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node1, next_port1), col_front1);
-                let (next_node2, next_port2) = hugr
-                    .single_linked_input(node, OutgoingPort::from(2))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node2, next_port2), col_front2);
             }
             TketOp::MeasureFree => {
-                let (_, col_in) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.q_index_map.insert(
-                    DataflowPoint::InternalIn(node, IncomingPort::from(0)),
-                    col_in,
-                );
+                self.apply_op_with(hugr, node, |_, q_index_map, [col_in]| {
+                    q_index_map.insert(
+                        DataflowPoint::InternalIn(node, IncomingPort::from(0)),
+                        col_in,
+                    );
+                    []
+                });
             }
             TketOp::QAlloc => {
-                let col_front: usize = self.tab.add_qubits(1);
-                // Add row for Z over col_front
-                let mut front_bv = BitVector::new(self.tab.nb_qubits);
-                front_bv.xor_bit(col_front);
-                self.tab
-                    .add_stab(front_bv, BitVector::new(self.tab.nb_qubits), false);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col_front);
+                self.apply_op_with(hugr, node, |tab, _, []| {
+                    let col_front: usize = tab.add_qubits(1);
+                    // Add row for Z over col_front
+                    let mut front_bv = BitVector::new(tab.nb_qubits);
+                    front_bv.xor_bit(col_front);
+                    tab.add_stab(front_bv, BitVector::new(tab.nb_qubits), false);
+                    [col_front]
+                });
             }
             TketOp::QFree => {
-                let (_, col_in) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                // Project out non-commuting rows and remove column from tableau
-                self.tab
-                    .project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
-                let moved_qb = self.tab.delete_qubit(col_in);
-                if moved_qb.is_some() {
-                    let mq = moved_qb.unwrap();
-                    let (removed_dfp, _) = self.q_index_map.remove_by_right(&mq).unwrap();
-                    self.q_index_map.insert(removed_dfp, col_in);
-                }
+                self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
+                    // Project out non-commuting rows and remove column from tableau
+                    tab.project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
+                    let moved_qb = tab.delete_qubit(col_in);
+                    if moved_qb.is_some() {
+                        let mq = moved_qb.unwrap();
+                        let (removed_dfp, _) = q_index_map.remove_by_right(&mq).unwrap();
+                        q_index_map.insert(removed_dfp, col_in);
+                    }
+                    []
+                });
             }
             TketOp::Reset => {
-                let (_, col_in) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                // Project out non-commuting rows
-                self.tab
-                    .project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
-                // Reuse col_in for the output qubit
-                // Add row for Z over col_in
-                let mut bv = BitVector::new(self.tab.nb_qubits);
-                bv.xor_bit(col_in);
-                self.tab
-                    .add_stab(bv, BitVector::new(self.tab.nb_qubits), false);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col_in);
+                self.apply_op_with(hugr, node, |tab, _, [col_in]| {
+                    // Project out non-commuting rows
+                    tab.project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
+                    // Reuse col_in for the output qubit
+                    // Add row for Z over col_in
+                    let mut bv = BitVector::new(tab.nb_qubits);
+                    bv.xor_bit(col_in);
+                    tab.add_stab(bv, BitVector::new(tab.nb_qubits), false);
+                    [col_in]
+                });
             }
             TketOp::V => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_v(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_v(col);
+                });
             }
             TketOp::Vdg => {
-                let (_, col) = self
-                    .q_index_map
-                    .remove_by_left(&DataflowPoint::Frontier(node, IncomingPort::from(0)))
-                    .unwrap();
-                self.tab.append_v(col);
-                self.tab.append_x(col);
-                let (next_node, next_port) = hugr
-                    .single_linked_input(node, OutgoingPort::from(0))
-                    .unwrap();
-                self.q_index_map
-                    .insert(DataflowPoint::Frontier(next_node, next_port), col);
+                self.apply_clifford_with(hugr, node, |tab, [col]| {
+                    tab.append_v(col);
+                    tab.append_x(col);
+                });
             }
             _ => {
                 // Only other remaining TketOp option at time of writing is TryQAlloc which has no qubits in its signature (the output is a Sum and therefore we currently don't track any relations involving it)
