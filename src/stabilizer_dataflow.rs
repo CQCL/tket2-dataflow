@@ -117,7 +117,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             non_ios.iter().map(|i| (*i, PauliXZ::Z)),
         )
         .collect_vec();
-        self.tab.project(&project_cols);
+        self.tab.project_cols_to_zero(&project_cols);
         for i in non_ios {
             let moved_qb = self.tab.delete_qubit(i);
             match moved_qb {
@@ -447,7 +447,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             TketOp::QFree => {
                 self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
                     // Project out non-commuting rows and remove column from tableau
-                    tab.project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
+                    tab.project_cols_to_zero(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
                     let moved_qb = tab.delete_qubit(col_in);
                     if moved_qb.is_some() {
                         let mq = moved_qb.unwrap();
@@ -460,7 +460,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             TketOp::Reset => {
                 self.apply_op_with(hugr, node, |tab, _, [col_in]| {
                     // Project out non-commuting rows
-                    tab.project(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
+                    tab.project_cols_to_zero(&vec![(col_in, PauliXZ::X), (col_in, PauliXZ::Z)]);
                     // Reuse col_in for the output qubit
                     // Add row for Z over col_in
                     let mut bv = BitVector::new(tab.nb_qubits);
@@ -798,7 +798,7 @@ impl<H: HugrView> SDFAnalysis<H> {
                 non_ios.iter().map(|i| (*i, PauliXZ::Z)),
             )
             .collect_vec();
-            projected_tab.project(&project_cols);
+            projected_tab.project_cols_to_zero(&project_cols);
             // Rebuild projected_tab with the column order given by unified_X_cols
             let mut unified_order_tab = SymplecticTableau::new(n_unified_qbs);
             for i in 0..projected_tab.nb_stabs {
@@ -918,7 +918,7 @@ impl<H: HugrView> SDFAnalysis<H> {
             non_ios.iter().map(|i| (*i, PauliXZ::Z))
         )
         .collect_vec();
-        body_summary.tab.project(&project_cols);
+        body_summary.tab.project_cols_to_zero(&project_cols);
         for i in 0..body_summary.tab.nb_stabs {
             let mut z = BitVector::new(summary.q_index_map.len());
             let mut x = BitVector::new(summary.q_index_map.len());
@@ -1010,7 +1010,7 @@ impl<H: HugrView> SDFAnalysis<H> {
             (summary.tab.nb_qubits..iter_2_tab.nb_qubits).map(|i| (i, PauliXZ::Z))
         )
         .collect_vec();
-        iter_2_tab.project(&iter_2_project_cols);
+        iter_2_tab.project_cols_to_zero(&iter_2_project_cols);
         for q in (summary.tab.nb_qubits..iter_2_tab.nb_qubits).rev() {
             // This removes the joined qubits and any of just_inputs from iteration 2
             // Since no information is obtained for just_outputs, it doesn't matter which copy of the qubits we remove
