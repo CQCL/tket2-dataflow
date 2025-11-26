@@ -468,8 +468,8 @@ impl SymplecticTableau {
 
     pub fn all_columns(&self) -> Vec<(usize, PauliXZ)> {
         interleave(
-            (0..self.nb_stabs).map(|c| (c, PauliXZ::X)),
-            (0..self.nb_stabs).map(|c| (c, PauliXZ::Z)),
+            (0..self.nb_qubits).map(|c| (c, PauliXZ::X)),
+            (0..self.nb_qubits).map(|c| (c, PauliXZ::Z)),
         )
         .collect_vec()
     }
