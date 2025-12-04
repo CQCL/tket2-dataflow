@@ -10,6 +10,7 @@ use hugr::{
     HugrView, IncomingPort, OutgoingPort,
 };
 use hugr_core::hugr::internal::PortgraphNodeMap;
+use indexmap::{IndexMap, IndexSet};
 use itertools::{chain, Itertools};
 use petgraph::{algo::toposort, unionfind::UnionFind};
 use tket::{
@@ -467,12 +468,13 @@ impl<H: HugrMut> PhaseFold<H> {
 
     pub fn apply_folds(&self, hugr: &mut H, pfsettings: &PhaseFoldSettings) {
         // Split each bucket into rotations and measurements
-        let mut bucket_rotations: Vec<HashSet<H::Node>> =
-            vec![HashSet::new(); self.bucket_lookup.len()];
-        let mut bucket_measures: Vec<HashSet<H::Node>> =
-            vec![HashSet::new(); self.bucket_lookup.len()];
-        let mut bucket_measure_frees: Vec<HashSet<H::Node>> =
-            vec![HashSet::new(); self.bucket_lookup.len()];
+        // IndexSet maintains the insertion order so we can iterate through and make changes to the hugr in a deterministic order (it breaks if you remove individual elements from the set, but in this routine the only removals occur when clearing the entire set)
+        let mut bucket_rotations: Vec<IndexSet<H::Node>> =
+            vec![IndexSet::new(); self.bucket_lookup.len()];
+        let mut bucket_measures: Vec<IndexSet<H::Node>> =
+            vec![IndexSet::new(); self.bucket_lookup.len()];
+        let mut bucket_measure_frees: Vec<IndexSet<H::Node>> =
+            vec![IndexSet::new(); self.bucket_lookup.len()];
         for (r_node, r_index) in &self.rotation_lookup {
             let r_bucket = self.bucket_lookup.find(*r_index);
             let OpType::ExtensionOp(op) = hugr.get_optype(*r_node) else {
@@ -628,10 +630,16 @@ impl<H: HugrMut> PhaseFold<H> {
         if pfsettings.merge_rr {
             for bucket in bucket_rotations {
                 // Subdivide the bucket based on parent node to merge rotations with the same parent
-                for (parent, sibling_bucket) in bucket
-                    .iter()
-                    .into_group_map_by(|node| hugr.get_parent(**node).unwrap())
-                {
+                let mut bucket_by_parent: IndexMap<H::Node, Vec<H::Node>> = IndexMap::new();
+                for node in bucket {
+                    let parent = hugr.get_parent(node).unwrap();
+                    if let Some(buck) = bucket_by_parent.get_mut(&parent) {
+                        buck.push(node);
+                    } else {
+                        bucket_by_parent.insert(parent, vec![node]);
+                    }
+                }
+                for (parent, sibling_bucket) in bucket_by_parent {
                     // If none or only one rotation, nothing to merge
                     if sibling_bucket.len() < 2 {
                         continue;
@@ -660,7 +668,7 @@ impl<H: HugrMut> PhaseFold<H> {
                     let mut acc_static = 0.;
                     let mut acc_dynamic: Option<(H::Node, OutgoingPort)> = None;
                     for r_node in sibling_bucket.iter() {
-                        let OpType::ExtensionOp(op) = hugr.get_optype(**r_node) else {
+                        let OpType::ExtensionOp(op) = hugr.get_optype(*r_node) else {
                             unreachable!()
                         };
                         let Ok(tkop) = TketOp::from_extension_op(op) else {
@@ -687,7 +695,7 @@ impl<H: HugrMut> PhaseFold<H> {
                             }
                             TketOp::Rx | TketOp::Ry | TketOp::Rz => {
                                 let (source_node, source_port) = hugr
-                                    .single_linked_output(**r_node, IncomingPort::from(1))
+                                    .single_linked_output(*r_node, IncomingPort::from(1))
                                     .unwrap();
                                 let (value_node, value_port) =
                                     if polarity == latest_rotation_polarity {
@@ -746,28 +754,28 @@ impl<H: HugrMut> PhaseFold<H> {
                         }
                         if r_node != latest_rotation_node {
                             let (q_pred, q_pred_port) = hugr
-                                .single_linked_output(**r_node, IncomingPort::from(0))
+                                .single_linked_output(*r_node, IncomingPort::from(0))
                                 .unwrap();
                             let (q_succ, q_succ_port) = hugr
-                                .single_linked_input(**r_node, OutgoingPort::from(0))
+                                .single_linked_input(*r_node, OutgoingPort::from(0))
                                 .unwrap();
                             hugr.connect(q_pred, q_pred_port, q_succ, q_succ_port);
-                            hugr.remove_node(**r_node);
+                            hugr.remove_node(*r_node);
                         }
                     }
                     // Now to merge the accumulated rotations into the latest node.
                     // We pick the rotation gate Rx/Ry/Rz to match the basis of the original gate.
-                    let OpType::ExtensionOp(op) = hugr.get_optype(**latest_rotation_node) else {
+                    let OpType::ExtensionOp(op) = hugr.get_optype(*latest_rotation_node) else {
                         unreachable!()
                     };
                     let Ok(tkop) = TketOp::from_extension_op(op) else {
                         unreachable!()
                     };
                     let (q_pred, q_pred_port) = hugr
-                        .single_linked_output(**latest_rotation_node, IncomingPort::from(0))
+                        .single_linked_output(*latest_rotation_node, IncomingPort::from(0))
                         .unwrap();
                     let (q_succ, q_succ_port) = hugr
-                        .single_linked_input(**latest_rotation_node, OutgoingPort::from(0))
+                        .single_linked_input(*latest_rotation_node, OutgoingPort::from(0))
                         .unwrap();
                     match acc_dynamic {
                         Some((mut source_node, mut source_port)) => {
@@ -925,30 +933,42 @@ impl<H: HugrMut> PhaseFold<H> {
                             }
                         }
                     }
-                    hugr.remove_node(**latest_rotation_node);
+                    hugr.remove_node(*latest_rotation_node);
                 }
             }
         }
 
         if pfsettings.merge_mm {
             for (bucket_m, bucket_mf) in bucket_measures.iter().zip(bucket_measure_frees) {
-                let measures_by_parent = bucket_m
-                    .iter()
-                    .into_group_map_by(|node| hugr.get_parent(**node).unwrap());
-                let measure_frees_by_parent = bucket_mf
-                    .iter()
-                    .into_group_map_by(|node| hugr.get_parent(**node).unwrap());
+                let mut measures_by_parent: IndexMap<H::Node, Vec<H::Node>> = IndexMap::new();
+                for node in bucket_m {
+                    let parent = hugr.get_parent(*node).unwrap();
+                    if let Some(buck) = measures_by_parent.get_mut(&parent) {
+                        buck.push(*node);
+                    } else {
+                        measures_by_parent.insert(parent, vec![*node]);
+                    }
+                }
+                let mut measure_frees_by_parent: IndexMap<H::Node, Vec<H::Node>> = IndexMap::new();
+                for node in bucket_mf {
+                    let parent = hugr.get_parent(node).unwrap();
+                    if let Some(buck) = measure_frees_by_parent.get_mut(&parent) {
+                        buck.push(node);
+                    } else {
+                        measure_frees_by_parent.insert(parent, vec![node]);
+                    }
+                }
                 let mut all_parents: HashSet<H::Node> = HashSet::new();
                 all_parents.extend(measures_by_parent.keys());
                 all_parents.extend(measure_frees_by_parent.keys());
                 for parent in all_parents {
-                    let empty: Vec<&H::Node> = vec![]; // Just needed to give references below
+                    let empty: Vec<H::Node> = vec![]; // Just needed to give references below
                     let ms = measures_by_parent.get(&parent).unwrap_or(&empty);
                     let mfs = measure_frees_by_parent.get(&parent).unwrap_or(&empty);
                     if ms.len() + mfs.len() < 2 {
                         continue;
                     }
-                    let earliest_measure: Option<&&H::Node> = ms.iter().max_by_key(|n| {
+                    let earliest_measure: Option<&H::Node> = ms.iter().max_by_key(|n| {
                         if !topo_order_lookup.contains_key(n) {
                             let (region, node_map) = hugr.region_portgraph(parent);
                             for (i, ni) in toposort(&region, None).unwrap().iter().enumerate() {
@@ -957,7 +977,7 @@ impl<H: HugrMut> PhaseFold<H> {
                         }
                         topo_order_lookup.get(n).unwrap().clone()
                     });
-                    let earliest_measure_free: Option<&&H::Node> = mfs.iter().max_by_key(|n| {
+                    let earliest_measure_free: Option<&H::Node> = mfs.iter().max_by_key(|n| {
                         if !topo_order_lookup.contains_key(n) {
                             let (region, node_map) = hugr.region_portgraph(parent);
                             for (i, ni) in toposort(&region, None).unwrap().iter().enumerate() {
@@ -972,16 +992,16 @@ impl<H: HugrMut> PhaseFold<H> {
                                 if topo_order_lookup.get(&m).unwrap()
                                     < topo_order_lookup.get(&mf).unwrap()
                                 {
-                                    **m
+                                    *m
                                 } else {
-                                    **mf
+                                    *mf
                                 }
                             }
-                            None => **m,
+                            None => *m,
                         },
                         None => {
                             // earliest_measure_free must contain a value
-                            **earliest_measure_free.unwrap()
+                            *earliest_measure_free.unwrap()
                         }
                     };
                     let earliest_polarity = self
@@ -1002,7 +1022,7 @@ impl<H: HugrMut> PhaseFold<H> {
                         } else {
                             None
                         };
-                    for m_node in bucket_m {
+                    for m_node in ms {
                         if *m_node == earliest_node {
                             continue;
                         }
@@ -1049,7 +1069,7 @@ impl<H: HugrMut> PhaseFold<H> {
                         }
                         hugr.remove_node(*m_node);
                     }
-                    for mf_node in bucket_mf.iter() {
+                    for mf_node in mfs {
                         if *mf_node == earliest_node {
                             continue;
                         }
@@ -1601,6 +1621,3 @@ mod test {
         assert_eq!(hugr.num_nodes(), 24);
     }
 }
-
-// todo!("Make phase fold edits determinisitc by removing the iteration over hashes of nodes");
-// todo!("Account for opaque bool_type, its operations and conversions to/from bool_t (i.e. Sum[unit, unit]) in dataflow analysis");
