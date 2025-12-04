@@ -6,7 +6,7 @@ use hugr::{
     hugr::hugrmut::HugrMut,
     ops::{Const, LoadConstant, OpType, Tag, Value},
     std_extensions::{arithmetic::float_ops::FloatOps, logic::LogicOp},
-    types::{TypeRV, TypeRow},
+    types::TypeRow,
     HugrView, IncomingPort, OutgoingPort,
 };
 use hugr_core::hugr::internal::PortgraphNodeMap;
@@ -14,7 +14,7 @@ use itertools::{chain, Itertools};
 use petgraph::{algo::toposort, unionfind::UnionFind};
 use tket::{
     extension::{
-        bool::BoolOp,
+        bool::{bool_type, BoolOp, ConstBool},
         rotation::{rotation_type, ConstRotation, RotationOp},
     },
     TketOp,
@@ -473,7 +473,8 @@ impl<H: HugrMut> PhaseFold<H> {
             vec![HashSet::new(); self.bucket_lookup.len()];
         let mut bucket_measure_frees: Vec<HashSet<H::Node>> =
             vec![HashSet::new(); self.bucket_lookup.len()];
-        for (r_node, r_bucket) in &self.rotation_lookup {
+        for (r_node, r_index) in &self.rotation_lookup {
+            let r_bucket = self.bucket_lookup.find(*r_index);
             let OpType::ExtensionOp(op) = hugr.get_optype(*r_node) else {
                 unreachable!()
             };
@@ -482,13 +483,13 @@ impl<H: HugrMut> PhaseFold<H> {
             };
             match tkop {
                 TketOp::Measure => {
-                    bucket_measures[*r_bucket].insert(*r_node);
+                    bucket_measures[r_bucket].insert(*r_node);
                 }
                 TketOp::MeasureFree => {
-                    bucket_measure_frees[*r_bucket].insert(*r_node);
+                    bucket_measure_frees[r_bucket].insert(*r_node);
                 }
                 _ => {
-                    bucket_rotations[*r_bucket].insert(*r_node);
+                    bucket_rotations[r_bucket].insert(*r_node);
                 }
             }
         }
@@ -570,15 +571,26 @@ impl<H: HugrMut> PhaseFold<H> {
                     Some(p) => *p,
                     None => false,
                 };
-                let const_val_node = hugr.add_node_with_parent(
+                let measure_result = ConstBool::new(polarity);
+                let const_val_node =
+                    hugr.add_node_with_parent(parent, Const::new(measure_result.into()));
+                let load_const_node = hugr.add_node_with_parent(
                     parent,
-                    Tag::new(if polarity { 1 } else { 0 }, vec![TypeRow::new(); 2]),
+                    LoadConstant {
+                        datatype: bool_type(),
+                    },
+                );
+                hugr.connect(
+                    const_val_node,
+                    OutgoingPort::from(0),
+                    load_const_node,
+                    IncomingPort::from(0),
                 );
                 for (c_succ, c_succ_port) in hugr
                     .linked_inputs(*mf_node, OutgoingPort::from(0))
                     .collect_vec()
                 {
-                    hugr.connect(const_val_node, OutgoingPort::from(0), c_succ, c_succ_port);
+                    hugr.connect(load_const_node, OutgoingPort::from(0), c_succ, c_succ_port);
                 }
                 hugr.remove_node(*mf_node);
             }
@@ -1086,6 +1098,507 @@ impl<H: HugrMut> PhaseFold<H> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use hugr::{
+        builder::{
+            endo_sig, Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder, HugrBuilder,
+            SubContainer,
+        },
+        extension::prelude::{bool_t, qb_t, usize_t},
+        type_row,
+        types::Signature,
+        Hugr, HugrView,
+    };
+    use rstest::fixture;
+    use tket::{
+        extension::{bool::BoolOp, rotation::rotation_type},
+        TketOp,
+    };
+
+    use crate::{
+        phase_fold_complete::{PhaseFold, PhaseFoldSettings},
+        stabilizer_dataflow_complete::{DataflowFlowDetail, DataflowSettings, SDFAnalysis},
+    };
+
+    fn default_settings(_: hugr::Node) -> DataflowSettings {
+        DataflowSettings {
+            flow_level: DataflowFlowDetail::All,
+            include_external_interface: false,
+            include_sum_types: true,
+            include_loop_body: false,
+            rotation_override: true,
+        }
+    }
+
+    const MAX_PFSETTINGS: PhaseFoldSettings = PhaseFoldSettings {
+        merge_rr: true,
+        merge_rm: true,
+        merge_mm: true,
+        constant_r: true,
+        constant_m: true,
+        null_r: true,
+    };
+
+    #[test]
+    fn test_empty() {
+        let builder = FunctionBuilder::new("empty", endo_sig(vec![])).unwrap();
+        let mut hugr = builder.finish_hugr().unwrap();
+        assert_eq!(hugr.num_nodes(), 4);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        assert!(pf.rotation_lookup.is_empty());
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert_eq!(hugr.num_nodes(), 4);
+    }
+
+    #[test]
+    fn test_identity() {
+        let builder =
+            FunctionBuilder::new("identity", endo_sig(vec![usize_t(), qb_t(), qb_t()])).unwrap();
+        let [i, qb0, qb1] = builder.input_wires_arr();
+        let mut hugr = builder.finish_hugr_with_outputs([i, qb0, qb1]).unwrap();
+        assert_eq!(hugr.num_nodes(), 4);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        assert!(pf.rotation_lookup.is_empty());
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert_eq!(hugr.num_nodes(), 4);
+    }
+
+    #[test]
+    fn test_if_simple() {
+        let mut builder =
+            FunctionBuilder::new("if_simple", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
+        let [qb0, qb1, b] = builder.input_wires_arr();
+        let t = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
+        let [qb0] = t.outputs_arr();
+        let mut cond_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], b),
+                [(qb_t(), qb0), (qb_t(), qb1)],
+                vec![qb_t(); 2].into(),
+            )
+            .unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [c0q0, c0q1] = cond0_builder.input_wires_arr();
+        let [c0q0, c0q1] = cond0_builder
+            .add_dataflow_op(TketOp::CX, [c0q0, c0q1])
+            .unwrap()
+            .outputs_arr();
+        cond0_builder.finish_with_outputs([c0q0, c0q1]).ok();
+        let cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [c1c0, c1q1] = cond1_builder.input_wires_arr();
+        cond1_builder.finish_with_outputs([c1c0, c1q1]).ok();
+        let cond = cond_builder.finish_sub_container().unwrap();
+        let [qb0, qb1] = cond.outputs_arr();
+        let tdg = builder.add_dataflow_op(TketOp::Tdg, [qb0]).unwrap();
+        let [qb0] = tdg.outputs_arr();
+        let mut hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
+        assert_eq!(hugr.num_nodes(), 14);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert_eq!(hugr.num_nodes(), 12);
+        assert!(hugr.validate().is_ok());
+    }
+
+    #[test]
+    fn test_loop_simple() {
+        let mut builder =
+            FunctionBuilder::new("loop_simple", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
+        let [qb0, qb1, b] = builder.input_wires_arr();
+        let t = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
+        let [qb0] = t.outputs_arr();
+        let mut loop_builder = builder
+            .tail_loop_builder(
+                [],
+                [(qb_t(), qb0), (qb_t(), qb1), (bool_t(), b)],
+                type_row![],
+            )
+            .unwrap();
+        let [loop_qb0, loop_qb1, loop_b] = loop_builder.input_wires_arr();
+        let [loop_qb0, loop_qb1] = loop_builder
+            .add_dataflow_op(TketOp::CX, [loop_qb0, loop_qb1])
+            .unwrap()
+            .outputs_arr();
+        let loop_cond = loop_builder
+            .make_break(loop_builder.loop_signature().unwrap().clone(), [])
+            .unwrap();
+        let tl = loop_builder
+            .finish_with_outputs(loop_cond, [loop_qb0, loop_qb1, loop_b])
+            .unwrap();
+        let [qb0, qb1, b] = tl.outputs_arr();
+        let tdg = builder.add_dataflow_op(TketOp::Tdg, [qb0]).unwrap();
+        let [qb0] = tdg.outputs_arr();
+        let mut hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
+        assert_eq!(hugr.num_nodes(), 11);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert_eq!(hugr.num_nodes(), 9);
+        assert!(hugr.validate().is_ok());
+    }
+
+    #[test]
+    fn test_loop_swap() {
+        let mut builder =
+            FunctionBuilder::new("loop_swap", endo_sig(vec![qb_t(), qb_t(), bool_t()])).unwrap();
+        let [qb0, qb1, b] = builder.input_wires_arr();
+        let [qb0, qb1] = builder
+            .add_dataflow_op(TketOp::CX, [qb0, qb1])
+            .unwrap()
+            .outputs_arr();
+        let [qb1] = builder
+            .add_dataflow_op(TketOp::T, [qb1])
+            .unwrap()
+            .outputs_arr();
+        let [qb0, qb1] = builder
+            .add_dataflow_op(TketOp::CX, [qb0, qb1])
+            .unwrap()
+            .outputs_arr();
+        let loop_builder = builder
+            .tail_loop_builder(
+                [],
+                [(qb_t(), qb0), (qb_t(), qb1), (bool_t(), b)],
+                type_row![],
+            )
+            .unwrap();
+        let [loop_qb0, loop_qb1, loop_b] = loop_builder.input_wires_arr();
+        let tl = loop_builder
+            .finish_with_outputs(loop_b, [loop_qb1, loop_qb0, loop_b])
+            .unwrap();
+        let [qb0, qb1, b] = tl.outputs_arr();
+        let [qb0, qb1] = builder
+            .add_dataflow_op(TketOp::CX, [qb0, qb1])
+            .unwrap()
+            .outputs_arr();
+        let [qb1] = builder
+            .add_dataflow_op(TketOp::Tdg, [qb1])
+            .unwrap()
+            .outputs_arr();
+        let [qb0, qb1] = builder
+            .add_dataflow_op(TketOp::CX, [qb0, qb1])
+            .unwrap()
+            .outputs_arr();
+        let mut hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
+        assert_eq!(hugr.num_nodes(), 13);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert_eq!(hugr.num_nodes(), 11);
+        assert!(hugr.validate().is_ok());
+    }
+
+    #[test]
+    fn test_merge_rotation_cases() {
+        let mut builder = FunctionBuilder::new(
+            "merge_rotation_cases",
+            Signature::new(
+                vec![
+                    qb_t(),
+                    rotation_type(),
+                    rotation_type(),
+                    rotation_type(),
+                    rotation_type(),
+                ],
+                vec![qb_t()],
+            ),
+        )
+        .unwrap();
+        let [q, a0, a1, a2, a3] = builder.input_wires_arr();
+        // Merge four rotation gates by addition of phases (with different original bases)
+        let [q] = builder
+            .add_dataflow_op(TketOp::Rz, [q, a0])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Rx, [q, a1])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Vdg, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Ry, [q, a2])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::V, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Rz, [q, a3])
+            .unwrap()
+            .outputs_arr();
+        // Begin new chain
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        // Merge rotation gates with different polarities (final gate being Rx)
+        let [q] = builder
+            .add_dataflow_op(TketOp::Rz, [q, a0])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::X, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Rx, [q, a1])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        // Begin new chain
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        // Merge rotation gates with constant phases (final gate being Ry)
+        let [q] = builder
+            .add_dataflow_op(TketOp::T, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Vdg, [q])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::Ry, [q, a1])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::V, [q])
+            .unwrap()
+            .outputs_arr();
+        // Begin new chain
+        let [q] = builder
+            .add_dataflow_op(TketOp::H, [q])
+            .unwrap()
+            .outputs_arr();
+        // Merge rotation gates with constant phases with different parities (final gate being a constant phase)
+        let [q] = builder
+            .add_dataflow_op(TketOp::Rz, [q, a0])
+            .unwrap()
+            .outputs_arr();
+        let [q] = builder
+            .add_dataflow_op(TketOp::X, [q])
+            .unwrap()
+            .outputs_arr();
+        let [mut q] = builder
+            .add_dataflow_op(TketOp::T, [q])
+            .unwrap()
+            .outputs_arr();
+        for i in 1..=8 {
+            // Begin new chain
+            let [new_q] = builder
+                .add_dataflow_op(TketOp::H, [q])
+                .unwrap()
+                .outputs_arr();
+            q = new_q;
+            // Merge multiples of T gate phases
+            for _ in 0..i {
+                let [new_q] = builder
+                    .add_dataflow_op(TketOp::T, [q])
+                    .unwrap()
+                    .outputs_arr();
+                q = new_q;
+            }
+        }
+        let mut hugr = builder.finish_hugr_with_outputs([q]).unwrap();
+        assert_eq!(hugr.num_nodes(), 71);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        // Merging Rz's replaces each Rz by an Add
+        // When polarities differ, add an extra node for the Neg
+        // When sum includes a constant, the constant phase is replaced by a constant, load constant, and Add
+        // Replace the 36 T gates in the strings by 9 gates from the LUT
+        assert_eq!(hugr.num_nodes(), 54);
+        assert!(hugr.validate().is_ok());
+    }
+
+    #[fixture]
+    fn merge_measure_cases() -> Hugr {
+        let mut builder = FunctionBuilder::new(
+            "merge_measure_cases",
+            Signature::new(vec![qb_t(), qb_t(), rotation_type()], vec![bool_t(); 6]),
+        )
+        .unwrap();
+        let [q0, q1, a] = builder.input_wires_arr();
+        // Merge two measures and rotations (earliest is Measure)
+        let [q0] = builder
+            .add_dataflow_op(TketOp::Rz, [q0, a])
+            .unwrap()
+            .outputs_arr();
+        let [q0, b0] = builder
+            .add_dataflow_op(TketOp::Measure, [q0])
+            .unwrap()
+            .outputs_arr();
+        let [b1] = builder
+            .add_dataflow_op(TketOp::MeasureFree, [q0])
+            .unwrap()
+            .outputs_arr();
+        let [b1] = builder
+            .add_dataflow_op(BoolOp::read, [b1])
+            .unwrap()
+            .outputs_arr(); // MeasureFree produces a tket.bool rather than hugr.prelude.bool
+                            // Merge two measures with different polarity (earliest is MeasureFree)
+        let [q2] = builder
+            .add_dataflow_op(TketOp::QAlloc, [])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::X, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q1, q2] = builder
+            .add_dataflow_op(TketOp::CX, [q1, q2])
+            .unwrap()
+            .outputs_arr();
+        let [b2] = builder
+            .add_dataflow_op(TketOp::MeasureFree, [q1])
+            .unwrap()
+            .outputs_arr();
+        let [b2] = builder
+            .add_dataflow_op(BoolOp::read, [b2])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::H, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::Rx, [q2, a])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::H, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q2, b3] = builder
+            .add_dataflow_op(TketOp::Measure, [q2])
+            .unwrap()
+            .outputs_arr();
+        // Merge measures and rotations for constant
+        let [q2] = builder
+            .add_dataflow_op(TketOp::Reset, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::T, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q2, b4] = builder
+            .add_dataflow_op(TketOp::Measure, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::X, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [q2] = builder
+            .add_dataflow_op(TketOp::Tdg, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [b5] = builder
+            .add_dataflow_op(TketOp::MeasureFree, [q2])
+            .unwrap()
+            .outputs_arr();
+        let [b5] = builder
+            .add_dataflow_op(BoolOp::read, [b5])
+            .unwrap()
+            .outputs_arr();
+        builder
+            .finish_hugr_with_outputs([b0, b1, b2, b3, b4, b5])
+            .unwrap()
+    }
+
+    #[test]
+    fn test_merge_measure_cases_preserve_measures() {
+        let mut hugr = merge_measure_cases();
+        assert_eq!(hugr.num_nodes(), 24);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        let pfsettings = PhaseFoldSettings {
+            merge_rr: true,
+            merge_rm: true,
+            merge_mm: false,
+            constant_r: true,
+            constant_m: false,
+            null_r: true,
+        };
+        pf.apply_folds(&mut hugr, &pfsettings);
+        // The only gate removed should be the Rz, Rx, T, Tdg
+        assert_eq!(hugr.num_nodes(), 20);
+        assert!(hugr.validate().is_ok());
+    }
+
+    #[test]
+    fn test_merge_measure_cases_remove_measures() {
+        let mut hugr = merge_measure_cases();
+        assert_eq!(hugr.num_nodes(), 24);
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        // Should remove all 4 rotations, two Measures and two MeasureFrees
+        // Each removed MeasureFree adds back a QFree
+        // The constant Measure is replaced by a Tag, and the constant MeasureFree is replaced by a Const and a LoadConstant
+        // For the other removed measures, we get a make_opaque and read for the conversions, plus a negation
+        assert!(hugr.validate().is_ok());
+        assert_eq!(hugr.num_nodes(), 24);
     }
 }
 

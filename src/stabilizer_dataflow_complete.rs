@@ -57,28 +57,28 @@ pub struct DataflowSettings {
     /// Needs to be DataflowFlowDetail::All in order to perform gate hoisting.
     /// Having at least DataflowFlowDetail::ConditionalInvs allows branch-dependent optimisation across Conditional nodes.
     /// DataflowFlowDetail::All is needed for Conditional nodes to be resynthesised from the tableau for the enclosing scope (i.e. without maintaining a separate tableau for the nested blocks).
-    flow_level: DataflowFlowDetail,
+    pub(crate) flow_level: DataflowFlowDetail,
     /// Whether we track the external interface separately from any flow information.
     /// This is required in order to resynthesise from the tableau.
     /// Relationships between the interface qubits of different nodes can identify when phase folding (or similar gate merging) can be applied.
     /// Turning this on adds an additional qubit for each qubit input or output port on the given node.
     /// If this is on and flow_level is not DataflowFlowDetail::None, additional control qubits will be required to toggle between them.
-    include_external_interface: bool,
+    pub(crate) include_external_interface: bool,
     /// When qubits exist within a Sum type, do we attempt to track information about the qubits or leave it as a point of inaccuracy.
     /// Turning this on can enable more branch-dependent phase folding opportunities at the cost of more qubits for both the qubits themselves and control qubits for the branches of the sums.
     /// Examples of where this is useful include TryQAlloc gates and internalising the classical outcome of a measurement operation.
-    include_sum_types: bool,
+    pub(crate) include_sum_types: bool,
     /// For loops, whether or not we include a full copy of the loop body in the tableau.
     /// This is required in order to resynthesise loops from the tableau for the enclosing scope (i.e. without maintaining a separate tableau for the nested block).
     /// When flow_level is DataflowFlowDetail::All, the qubits for the internal nodes within the loop body are reused, but additional qubits will still be created for the input and output nodes within the loop body.
-    include_loop_body: bool,
+    pub(crate) include_loop_body: bool,
     /// For each gate, we typically want both the external interface to tell us where the gate occurs in the circuit and some flow information across the gate. For an Rz gate, this would take 2 qubits for the external interface and 4 control qubits to turn off the external interface when we want to focus on the flow information; giving a total of 8 qubits (2 ins, 2 outs, 4 controls) and 5 stabilizers.
     /// However, for Rz (and relatives like Rx, Ry, T), we can use 3 qubits (1 in, 1 out, 1 special) and 3 stabilizers to capture all the information we need for synthesis and flow - we essentially model it as a ZX spider with an open wire onto which we can post-select the angle of rotation, similar to its MBQC implementation.
     /// This exploits the fact that we don't need to load specific Pauli strings into both Z and X during resynthesis; an Rz gate only introduces a phase depending on the Pauli string loaded into Z.
     /// A stabilizer involving Z on the rotation's qubit tells us the Pauli string it acts around, and one involving the X says the rest of the stabilizer is dependent on the angle of rotation chosen, i.e. indicating the flow of causal influence through the circuit.
     /// This setting overrides all others for rotation gates to use this shorthand trick.
     /// The same trick of treating it as a ZX spider works for both Measure and MeasureFree, in which case the special qubit can just be treated as the classical output bit (DataflowPoint::SumOutPhControl) when include_sum_types == true.
-    rotation_override: bool,
+    pub(crate) rotation_override: bool,
 }
 
 impl DataflowSettings {
@@ -2258,55 +2258,56 @@ impl<H: HugrView> SDFAnalysis<H> {
         // These sets will be useful for us to compose onto the break case
         let mut bells: Vec<(usize, DataflowPoint<H::Node>)> = vec![];
         let mut classical_propagations: Vec<(usize, DataflowPoint<H::Node>)> = vec![];
-        for (dfp, q) in continue_flow.q_index_map.clone() {
-            let input_dfp: Option<DataflowPoint<H::Node>> = match dfp {
-                DataflowPoint::NodeIn(_, in_port, ri) => {
-                    // Since we have already called project_non_io, all NodeIns must be from body_out
-                    let counterpart = if in_port.index() == 0 {
-                        DataflowPoint::NodeOut(
-                            body_in,
-                            OutgoingPort::from(ri[0]),
-                            ri.as_slice()[1..].to_vec(),
-                        )
-                    } else {
-                        DataflowPoint::NodeOut(
-                            body_in,
-                            OutgoingPort::from(in_port.index() + loop_op.just_inputs.len() - 1),
-                            ri.clone(),
-                        )
-                    };
-                    bells.push((q, counterpart.clone()));
-                    Some(counterpart)
-                }
-                DataflowPoint::SumInPhControl(_, in_port, ri, si) => {
-                    // Similarly, the SumInPhControl must be from body_out
-                    if in_port.index() == 0 {
-                        if ri.is_empty() {
-                            // Controls for the top-level sum have no correspondant
-                            None
-                        } else {
-                            let counterpart = DataflowPoint::SumOutPhControl(
+        for q in 0..continue_flow.tab.nb_qubits {
+            let input_dfp: Option<DataflowPoint<H::Node>> =
+                match continue_flow.q_index_map.get_by_right(&q).unwrap() {
+                    DataflowPoint::NodeIn(_, in_port, ri) => {
+                        // Since we have already called project_non_io, all NodeIns must be from body_out
+                        let counterpart = if in_port.index() == 0 {
+                            DataflowPoint::NodeOut(
                                 body_in,
                                 OutgoingPort::from(ri[0]),
                                 ri.as_slice()[1..].to_vec(),
-                                si,
+                            )
+                        } else {
+                            DataflowPoint::NodeOut(
+                                body_in,
+                                OutgoingPort::from(in_port.index() + loop_op.just_inputs.len() - 1),
+                                ri.clone(),
+                            )
+                        };
+                        bells.push((q, counterpart.clone()));
+                        Some(counterpart)
+                    }
+                    DataflowPoint::SumInPhControl(_, in_port, ri, si) => {
+                        // Similarly, the SumInPhControl must be from body_out
+                        if in_port.index() == 0 {
+                            if ri.is_empty() {
+                                // Controls for the top-level sum have no correspondant
+                                None
+                            } else {
+                                let counterpart = DataflowPoint::SumOutPhControl(
+                                    body_in,
+                                    OutgoingPort::from(ri[0]),
+                                    ri.as_slice()[1..].to_vec(),
+                                    *si,
+                                );
+                                classical_propagations.push((q, counterpart.clone()));
+                                Some(counterpart)
+                            }
+                        } else {
+                            let counterpart = DataflowPoint::SumOutPhControl(
+                                body_in,
+                                OutgoingPort::from(in_port.index() + loop_op.just_inputs.len() - 1),
+                                ri.clone(),
+                                *si,
                             );
                             classical_propagations.push((q, counterpart.clone()));
                             Some(counterpart)
                         }
-                    } else {
-                        let counterpart = DataflowPoint::SumOutPhControl(
-                            body_in,
-                            OutgoingPort::from(in_port.index() + loop_op.just_inputs.len() - 1),
-                            ri.clone(),
-                            si,
-                        );
-                        classical_propagations.push((q, counterpart.clone()));
-                        Some(counterpart)
                     }
-                }
-                _ => None,
-            };
+                    _ => None,
+                };
             if let Some(in_dfp) = input_dfp {
                 let mut zz = BitVector::new(simple_identity_tab.nb_qubits);
                 zz.xor_bit(q);
