@@ -169,14 +169,6 @@ pub enum DataflowPoint<N: Copy + Eq + Hash> {
     SumOutControl(N, OutgoingPort, Vec<usize>, usize, usize),
     /// Same as SumInPControl but for outgoing ports, e.g. the result bit of a Measure gate.
     SumOutPhControl(N, OutgoingPort, Vec<usize>, usize),
-    // /// Similar to the distinction between NodeIn and TempIn, we use SumInControl for the classical values incident on a node compared to ExtInControl for its connection to the environment (the classical value we have to match with ExtOutControls from the predecessor).
-    // ExtInControl(N, IncomingPort, Vec<usize>, usize, usize),
-    // /// Analogous to ExtInControl but for SumInPhControl
-    // ExtInPhControl(N, IncomingPort, Vec<usize>, usize),
-    // /// Analogous to ExtInControl but for SumOutControl
-    // ExtOutControl(N, OutgoingPort, Vec<usize>, usize, usize),
-    // /// Analogous to ExtInControl but for SumOutPhControl
-    // ExtOutPhControl(N, OutgoingPort, Vec<usize>, usize),
     /// Given a node where we are tracking both the external interface and flow information, these controls allow us to toggle between them.
     /// (node, multiplicity-index)
     /// We assume post-selecting Z on this qubit corresponds to selecting the external interface (also selects the loop body for loops when DataflowFlowDetail::include_loop_body == true), and post-selecting X selects the flow information.
@@ -409,26 +401,11 @@ impl<H: HugrView> StabilizerDataflow<H> {
         &mut self,
         inj_variant: Either<(), ()>,
         control_node: H::Node,
-        // control_port: Either<IncomingPort, OutgoingPort>,
         control_port: OutgoingPort,
         control_row_index: Vec<usize>,
         control_sum_index: usize,
     ) {
         let control_qb = self.tab.add_qubit();
-        // let dfp = match control_port {
-        //     Either::Left(in_port) => DataflowPoint::ExtInPhControl(
-        //         control_node,
-        //         in_port,
-        //         control_row_index,
-        //         control_sum_index,
-        //     ),
-        //     Either::Right(out_port) => DataflowPoint::ExtOutPhControl(
-        //         control_node,
-        //         out_port,
-        //         control_row_index,
-        //         control_sum_index,
-        //     ),
-        // };
         let dfp = DataflowPoint::SumOutPhControl(
             control_node,
             control_port,
@@ -444,70 +421,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
             inj_variant.is_right(),
         );
     }
-
-    // fn sum_injection_old(
-    //     &mut self,
-    //     data: Vec<DataflowPoint<H::Node>>,
-    //     control_node: H::Node,
-    //     control_port: IncomingPort,
-    //     control_row_index: Vec<usize>,
-    //     control_sum_index: usize,
-    //     control_value: PauliXZ,
-    // ) {
-    //     // Echelon over data to obtain the minimal set of generators with non-identity values over them
-    //     let cols: Vec<(usize, PauliXZ)> = data
-    //         .iter()
-    //         .map(|dfp| {
-    //             let index = *self.q_index_map.get_by_left(dfp).unwrap();
-    //             [(index, PauliXZ::Z), (index, PauliXZ::X)]
-    //         })
-    //         .flatten()
-    //         .collect_vec();
-    //     self.tab.echelon(&cols);
-    //     // For each generator with non-identity over data, add a control qubit
-    //     let mut col_iter = cols.iter();
-    //     for s in 0..self.tab.nb_stabs {
-    //         // Find the next pivot qubit
-    //         let mut empty = true;
-    //         while let Some((ind, xz)) = col_iter.next() {
-    //             match xz {
-    //                 PauliXZ::X => {
-    //                     if self.tab.x[s].get(*ind) {
-    //                         empty = false;
-    //                         break;
-    //                     }
-    //                 }
-    //                 PauliXZ::Z => {
-    //                     if self.tab.z[s].get(*ind) {
-    //                         empty = false;
-    //                         break;
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         if empty {
-    //             break;
-    //         } else {
-    //             let ctrl_dfp = DataflowPoint::SumInControl(
-    //                 control_node,
-    //                 control_port,
-    //                 control_row_index.clone(),
-    //                 control_sum_index,
-    //                 s,
-    //             );
-    //             let new_index = self.tab.add_qubit();
-    //             match control_value {
-    //                 PauliXZ::X => {
-    //                     self.tab.x[s].xor_bit(new_index);
-    //                 }
-    //                 PauliXZ::Z => {
-    //                     self.tab.z[s].xor_bit(new_index);
-    //                 }
-    //             }
-    //             self.q_index_map.insert(ctrl_dfp, new_index);
-    //         }
-    //     }
-    // }
 
     fn identity_wire_recursive(
         hugr: &H,
@@ -596,36 +509,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                                 if chunk_it.len() == 1 {
                                     chunk_it[0].clone()
                                 } else {
-                                    // // ID(A+B) = L(ID(A)) + R(ID(B))
-                                    // // Inject all data from both variants
-                                    // let mut left = chunk_it[0].clone();
-                                    // StabilizerDataflow::sum_injection(
-                                    //     &mut left,
-                                    //     Either::Left(()),
-                                    //     target,
-                                    //     target_port,
-                                    //     row_index.clone(),
-                                    //     sum_index,
-                                    // );
-                                    // let mut right = chunk_it[1].clone();
-                                    // StabilizerDataflow::sum_injection(
-                                    //     &mut right,
-                                    //     Either::Right(()),
-                                    //     target,
-                                    //     target_port,
-                                    //     row_index.clone(),
-                                    //     sum_index,
-                                    // );
-                                    // // Combine injected copies
-                                    // StabilizerDataflow::controlled_conditional(
-                                    //     &left,
-                                    //     &right,
-                                    //     source,
-                                    //     source_port,
-                                    //     row_index.clone(),
-                                    //     sum_index,
-                                    // )
-
                                     // ID(A+B) = L(ID(A)) + R(ID(B))
                                     // We don't need to care about the injections since we are using the same controls for the classical variables at the source and target, so we should only need to use Sum(In/Out)Controls to pick between different sets of qubit identities
                                     StabilizerDataflow::controlled_conditional(
@@ -647,23 +530,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
             StabilizerDataflow::default()
         }
     }
-
-    // fn identity_wire(hugr: &H, source: H::Node, source_port: OutgoingPort) -> Self {
-    //     let (target, target_port) = hugr.single_linked_input(source, source_port).unwrap();
-    //     let (_, wire_type) = hugr
-    //         .out_value_types(source)
-    //         .find(|(p, _)| *p == source_port)
-    //         .unwrap();
-    //     Self::identity_wire_recursive(
-    //         hugr,
-    //         source,
-    //         source_port,
-    //         target,
-    //         target_port,
-    //         &wire_type.into(),
-    //         &vec![],
-    //     )
-    // }
 
     fn initialise_from_input(hugr: &H, inp: H::Node, use_sums: bool) -> Self {
         hugr.out_value_types(inp)
@@ -1442,48 +1308,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 Self::tensor_product(&acc, &new_wire)
             })
     }
-
-    // /// Used for nodes with TketOps when DataflowSettings::include_external_interface == false and DataflowSettings::flow_level != DataflowFlowDetail::None (so we assume flow_level passed in here is not None), i.e. we can apply some amount of flow information in-place
-    // fn apply_flow(&mut self, hugr: &H, node: H::Node, flow: &mut StabilizerDataflow<H>, settings: DataflowSettings) {
-    //     todo!("Tensor product; bell post-selection on qubit wires when the predecessor exists (removing the adjoining qubits; add ZZ to join classical values on inputs whenever predecessor exists... Given the similarity between this and apply_combined, consider whether or not to just create an \"append\" method which can either take the flow for a node or the combination of its flow and interface")
-    // }
-
-    // /// Used when DataflowSettings::include_external_interface == true and DataflowSettings::flow_level != DataflowFlowDetail::None.
-    // /// This implementation handles this in a generic fashion, though for TketOps it may be faster in practice to define hand-written routines to do this for each gate type.
-    // /// Assumes flow has been defined across TempIns and TempOuts to describe the node on its own.
-    // fn apply_combined(&mut self, hugr: &H, node: H::Node, flow: &mut StabilizerDataflow<H>, settings: DataflowSettings) {
-    //     // Start by analysing flow to find the maximal number of stabilizers independent of the interface; we will need one role control qubit for each of these
-    //     let boundary_qbs: Vec<usize> = flow.q_index_map.iter().filter_map(|(dfp, q)| {
-    //         match dfp {
-    //             DataflowPoint::TempIn(_, _, _) | DataflowPoint::TempOut(_, _, _) => { Some(*q) }
-    //             // Any content on Ext(In/Out)(Ph)Controls will commute with the interface since the identity wires only use the phase controls and everything on phase controls is guaranteed to be in the Z basis
-    //             _ => { None }
-    //         }
-    //     }).collect_vec();
-    //     let cols_to_reduce = chain!(
-    //         boundary_qbs.iter().map(|q| (*q, PauliXZ::X)),
-    //         boundary_qbs.iter().map(|q| (*q, PauliXZ::Z)),
-    //     ).collect_vec();
-    //     flow.tab.echelon(&cols_to_reduce);
-    //     let mut first_non_interface_stab = 0;
-    //     for (q, pauli) in cols_to_reduce {
-    //         match pauli {
-    //             PauliXZ::X => {
-    //                 if flow.tab.x[first_non_interface_stab].get(q) {
-    //                     first_non_interface_stab += 1;
-    //                 }
-    //             }
-    //             PauliXZ::Z => {
-    //                 if flow.tab.z[first_non_interface_stab].get(q) {
-    //                     first_non_interface_stab += 1;
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     // As we now know how many role qubits we need, we can allocate them
-    //     let num_commuting_flow_stabs = flow.tab.nb_stabs - first_non_interface_stab;
-    //     todo!("Continue checking whether or not classical data messes up with the procedure here; may want to backtrack through everything else to incorporate identities over phase controls and the ability for appends to transfer ExtOut(Ph)Controls as they would for qubits and TempOuts.")
-    // }
 }
 
 /// Accumulates summaries of regions of a hugr
