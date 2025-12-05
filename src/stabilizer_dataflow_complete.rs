@@ -15,7 +15,7 @@ use hugr::{
 use hugr_core::hugr::internal::PortgraphNodeMap;
 use itertools::{chain, Either, Itertools};
 use petgraph::visit::{self as pv};
-use tket::{TketOp, extension::bool::bool_type};
+use tket::{TketOp, extension::bool::{BoolOp, bool_type}};
 
 use crate::{
     bit_vector::BitVector,
@@ -1679,6 +1679,259 @@ impl<H: HugrView> SDFAnalysis<H> {
                                     }
                                     _ => {
                                         // LogicOps will always only involve classical data, so we just omit the classical values if we don't know the semantics of the op
+                                    }
+                                }
+                            }
+                        } else if let Ok(bool_op) = BoolOp::from_extension_op(op) {
+                            if node_settings.include_sum_types {
+                                match bool_op {
+                                    BoolOp::not => {
+                                        let [sumin, sumout] = summary.tab.add_n_qubits();
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInPhControl(
+                                                node,
+                                                IncomingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumin,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumOutPhControl(
+                                                node,
+                                                OutgoingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumout,
+                                        );
+                                        let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                        zz.xor_bit(sumin);
+                                        zz.xor_bit(sumout);
+                                        summary.tab.add_stab(
+                                            zz,
+                                            BitVector::new(summary.tab.nb_qubits),
+                                            true,
+                                        );
+                                        let (pred_node, pred_port) = hugr
+                                            .single_linked_output(node, IncomingPort::from(0))
+                                            .unwrap();
+                                        if let Some(q) = summary.q_index_map.get_by_left(
+                                            &DataflowPoint::SumOutPhControl(
+                                                pred_node,
+                                                pred_port,
+                                                vec![],
+                                                0,
+                                            ),
+                                        ) {
+                                            let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                            zz.xor_bit(*q);
+                                            zz.xor_bit(sumin);
+                                            summary.tab.add_stab(
+                                                zz,
+                                                BitVector::new(summary.tab.nb_qubits),
+                                                false,
+                                            );
+                                        }
+                                    }
+                                    BoolOp::xor | BoolOp::eq => {
+                                        // Eq is just Xor followed by negation
+                                        let [sumin0, sumin1, sumout] = summary.tab.add_n_qubits();
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInPhControl(
+                                                node,
+                                                IncomingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumin0,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInPhControl(
+                                                node,
+                                                IncomingPort::from(1),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumin1,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumOutPhControl(
+                                                node,
+                                                OutgoingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumout,
+                                        );
+                                        let mut zzz = BitVector::new(summary.tab.nb_qubits);
+                                        zzz.xor_bit(sumin0);
+                                        zzz.xor_bit(sumin1);
+                                        zzz.xor_bit(sumout);
+                                        summary.tab.add_stab(
+                                            zzz,
+                                            BitVector::new(summary.tab.nb_qubits),
+                                            bool_op == BoolOp::eq,
+                                        );
+                                        let (pred0_node, pred0_port) = hugr
+                                            .single_linked_output(node, IncomingPort::from(0))
+                                            .unwrap();
+                                        if let Some(q) = summary.q_index_map.get_by_left(
+                                            &DataflowPoint::SumOutPhControl(
+                                                pred0_node,
+                                                pred0_port,
+                                                vec![],
+                                                0,
+                                            ),
+                                        ) {
+                                            let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                            zz.xor_bit(*q);
+                                            zz.xor_bit(sumin0);
+                                            summary.tab.add_stab(
+                                                zz,
+                                                BitVector::new(summary.tab.nb_qubits),
+                                                false,
+                                            );
+                                        }
+                                        let (pred1_node, pred1_port) = hugr
+                                            .single_linked_output(node, IncomingPort::from(1))
+                                            .unwrap();
+                                        if let Some(q) = summary.q_index_map.get_by_left(
+                                            &DataflowPoint::SumOutPhControl(
+                                                pred1_node,
+                                                pred1_port,
+                                                vec![],
+                                                0,
+                                            ),
+                                        ) {
+                                            let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                            zz.xor_bit(*q);
+                                            zz.xor_bit(sumin1);
+                                            summary.tab.add_stab(
+                                                zz,
+                                                BitVector::new(summary.tab.nb_qubits),
+                                                false,
+                                            );
+                                        }
+                                    }
+                                    BoolOp::and | BoolOp::or => {
+                                        // And and Or require the same sets of control qubits based on short-circuit definitions
+                                        let [sumin0, sumin1, sumout, sumctrl0, sumctrl1] =
+                                            summary.tab.add_n_qubits();
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInPhControl(
+                                                node,
+                                                IncomingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumin0,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInPhControl(
+                                                node,
+                                                IncomingPort::from(1),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumin1,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumOutPhControl(
+                                                node,
+                                                OutgoingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumout,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInControl(
+                                                node,
+                                                IncomingPort::from(0),
+                                                vec![],
+                                                0,
+                                                0,
+                                            ),
+                                            sumctrl0,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInControl(
+                                                node,
+                                                IncomingPort::from(0),
+                                                vec![],
+                                                0,
+                                                1,
+                                            ),
+                                            sumctrl1,
+                                        );
+                                        // AND(false, _) = false
+                                        // AND(true, x) = x
+                                        // OR(false, x) = x
+                                        // OR(true, _) = true
+                                        let mut false_z = BitVector::new(summary.tab.nb_qubits);
+                                        let mut true_z = BitVector::new(summary.tab.nb_qubits);
+                                        let mut true_x = BitVector::new(summary.tab.nb_qubits);
+                                        false_z.xor_bit(sumout);
+                                        false_z.xor_bit(sumctrl0);
+                                        true_z.xor_bit(sumout);
+                                        true_x.xor_bit(sumctrl1);
+                                        let true_phase = if bool_op == BoolOp::and {
+                                            true_z.xor_bit(sumin1);
+                                            false
+                                        } else {
+                                            false_z.xor_bit(sumin1);
+                                            true
+                                        };
+                                        summary.tab.add_stab(
+                                            false_z,
+                                            BitVector::new(summary.tab.nb_qubits),
+                                            false,
+                                        );
+                                        summary.tab.add_stab(true_z, true_x, true_phase);
+                                        let (pred0_node, pred0_port) = hugr
+                                            .single_linked_output(node, IncomingPort::from(0))
+                                            .unwrap();
+                                        if let Some(q) = summary.q_index_map.get_by_left(
+                                            &DataflowPoint::SumOutPhControl(
+                                                pred0_node,
+                                                pred0_port,
+                                                vec![],
+                                                0,
+                                            ),
+                                        ) {
+                                            let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                            zz.xor_bit(*q);
+                                            zz.xor_bit(sumin0);
+                                            summary.tab.add_stab(
+                                                zz,
+                                                BitVector::new(summary.tab.nb_qubits),
+                                                false,
+                                            );
+                                        }
+                                        let (pred1_node, pred1_port) = hugr
+                                            .single_linked_output(node, IncomingPort::from(1))
+                                            .unwrap();
+                                        if let Some(q) = summary.q_index_map.get_by_left(
+                                            &DataflowPoint::SumOutPhControl(
+                                                pred1_node,
+                                                pred1_port,
+                                                vec![],
+                                                0,
+                                            ),
+                                        ) {
+                                            let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                            zz.xor_bit(*q);
+                                            zz.xor_bit(sumin1);
+                                            summary.tab.add_stab(
+                                                zz,
+                                                BitVector::new(summary.tab.nb_qubits),
+                                                false,
+                                            );
+                                        }
+                                    }
+                                    _ => {
+                                        // BoolOps will always only involve classical data, so we just omit the classical values if we don't know the semantics of the op
                                     }
                                 }
                             }
