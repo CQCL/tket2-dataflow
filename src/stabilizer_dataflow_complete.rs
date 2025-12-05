@@ -15,7 +15,7 @@ use hugr::{
 use hugr_core::hugr::internal::PortgraphNodeMap;
 use itertools::{chain, Either, Itertools};
 use petgraph::visit::{self as pv};
-use tket::TketOp;
+use tket::{TketOp, extension::bool::bool_type};
 
 use crate::{
     bit_vector::BitVector,
@@ -456,6 +456,24 @@ impl<H: HugrView> StabilizerDataflow<H> {
             StabilizerDataflow {
                 tab: tab,
                 q_index_map: q_index_map,
+            }
+        } else if *wire_type == bool_type() {
+            // Whilst prelude::bool_t is just Sum[unit, unit], tket::bool_type is an opaque boolean with its own set of logical operations.
+            // Since TketOp::Measure produces a prelude::bool_t and TketOp::MeasureFree produces a tket::bool_type, we can expect them to be mixed in practice.
+            // Whenever we encounter an opaque boolean, treat it the same as another boolean.
+            // This routine for Sum[unit, unit] would produce a tableau with a single qubit and no stabilizers since the value of the boolean is unknown
+
+            let control = match source_port {
+                Either::Left(in_port) => {
+                    DataflowPoint::SumInPhControl(source, in_port, row_index.clone(), 0)
+                }
+                Either::Right(out_port) => {
+                    DataflowPoint::SumOutPhControl(source, out_port, row_index.clone(), 0)
+                }
+            };
+            StabilizerDataflow {
+                tab: SymplecticTableau::new(1),
+                q_index_map: BiHashMap::from_iter([(control, 0)]),
             }
         } else if let Some(sum) = wire_type.as_sum() {
             // If type is a Sum type, iterate through the variants, and recursively call for each element of the row and tensor product, then combine the variants
