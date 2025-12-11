@@ -213,9 +213,9 @@ impl<H: HugrMut> PhaseFold<H> {
                     );
                     // Matched the basic pattern, look up the node and check the non-identity permissibles for violations
                     for (sum_q, sum_node) in sum_node_lookup.iter() {
-                        if sum_node == r_node || anc_set.contains(sum_node) {
+                        if anc_set.contains(sum_node) {
                             if let Some(sum_stab) = leader_to_stab.get(&(*sum_q, PauliXZ::Z)) {
-                                // If sum_node is an ancestor (i.e. it is a conditional that contains r_node) or is r_node (i.e. it is the output of the Measure/MeasureFree) and there exists a stabilizer lead by sum_q, we may use that stabilizer for removing other violations
+                                // If sum_node is an ancestor (i.e. it is a conditional that contains r_node) and there exists a stabilizer lead by sum_q, we may use that stabilizer for removing other violations
                                 solver.add_stab(
                                     summary.tab.z[*sum_stab].clone(),
                                     summary.tab.x[*sum_stab].clone(),
@@ -312,10 +312,7 @@ impl<H: HugrMut> PhaseFold<H> {
                                 summary.tab.signs.get(*stab),
                             );
                             for (sum_q, sum_node) in sum_node_lookup.iter() {
-                                if sum_node == rot0
-                                    || sum_node == rot1
-                                    || anc_set.contains(sum_node)
-                                {
+                                if anc_set.contains(sum_node) {
                                     if let Some(sum_stab) =
                                         leader_to_stab.get(&(*sum_q, PauliXZ::Z))
                                     {
@@ -420,7 +417,7 @@ impl<H: HugrMut> PhaseFold<H> {
                         }
                         let mut cols_to_solve: Vec<(usize, PauliXZ)> = vec![(*r0q, PauliXZ::Z)];
                         for (sum_q, sum_node) in sum_node_lookup.iter() {
-                            if sum_node == rot0 || sum_node == rot1 || anc_set.contains(sum_node) {
+                            if anc_set.contains(sum_node) {
                                 if let Some(sum_stab) = leader_to_stab.get(&(*sum_q, PauliXZ::Z)) {
                                     solver.add_stab(
                                         summary.tab.z[*sum_stab].clone(),
@@ -1129,6 +1126,7 @@ mod test {
             SubContainer,
         },
         extension::prelude::{bool_t, qb_t, usize_t},
+        ops::handle::NodeHandle,
         type_row,
         types::Signature,
         Hugr, HugrView,
@@ -1619,5 +1617,97 @@ mod test {
         // For the other removed measures, we get a make_opaque and read for the conversions, plus a negation
         assert!(hugr.validate().is_ok());
         assert_eq!(hugr.num_nodes(), 24);
+    }
+
+    #[test]
+    fn test_merge_through_teleportation() {
+        // Without tracking the classical data, it is impossible to commute any stabilizer flow through the qubit teleportation circuit.
+        // But with our handling of boolean data via Sum types, we should be able to infer that any gate can move through.
+        let mut builder = FunctionBuilder::new("teleport", endo_sig(vec![qb_t()])).unwrap();
+        let [qb0] = builder.input_wires_arr();
+        let t = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
+        let alloc0 = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let alloc1 = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let h0 = builder
+            .add_dataflow_op(TketOp::H, [alloc0.out_wire(0)])
+            .unwrap();
+        let cx0 = builder
+            .add_dataflow_op(TketOp::CX, [h0.out_wire(0), alloc1.out_wire(0)])
+            .unwrap();
+        let cx1 = builder
+            .add_dataflow_op(TketOp::CX, [t.out_wire(0), cx0.out_wire(0)])
+            .unwrap();
+        let h1 = builder
+            .add_dataflow_op(TketOp::H, [cx1.out_wire(0)])
+            .unwrap();
+        let meas0 = builder
+            .add_dataflow_op(TketOp::MeasureFree, [h1.out_wire(0)])
+            .unwrap();
+        let meas0_convert = builder
+            .add_dataflow_op(BoolOp::read, [meas0.out_wire(0)])
+            .unwrap();
+        let meas1 = builder
+            .add_dataflow_op(TketOp::MeasureFree, [cx1.out_wire(1)])
+            .unwrap();
+        let meas1_convert = builder
+            .add_dataflow_op(BoolOp::read, [meas1.out_wire(0)])
+            .unwrap();
+        let mut cond0_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], meas1_convert.out_wire(0)),
+                [(qb_t(), cx0.out_wire(1))],
+                vec![qb_t()].into(),
+            )
+            .unwrap();
+        let cond00_builder = cond0_builder.case_builder(0).unwrap();
+        let [c0q] = cond00_builder.input_wires_arr();
+        cond00_builder.finish_with_outputs([c0q]).ok();
+        let mut cond01_builder = cond0_builder.case_builder(1).unwrap();
+        let [c1q] = cond01_builder.input_wires_arr();
+        let x = cond01_builder.add_dataflow_op(TketOp::X, [c1q]).unwrap();
+        cond01_builder.finish_with_outputs([x.out_wire(0)]).ok();
+        let cond0 = cond0_builder.finish_sub_container().unwrap();
+        let mut cond1_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], meas0_convert.out_wire(0)),
+                [(qb_t(), cond0.out_wire(0))],
+                vec![qb_t()].into(),
+            )
+            .unwrap();
+        let cond10_builder = cond1_builder.case_builder(0).unwrap();
+        let [c0q] = cond10_builder.input_wires_arr();
+        cond10_builder.finish_with_outputs([c0q]).ok();
+        let mut cond11_builder = cond1_builder.case_builder(1).unwrap();
+        let [c1q] = cond11_builder.input_wires_arr();
+        let z = cond11_builder.add_dataflow_op(TketOp::Z, [c1q]).unwrap();
+        cond11_builder.finish_with_outputs([z.out_wire(0)]).ok();
+        let cond1 = cond1_builder.finish_sub_container().unwrap();
+        let tdg = builder
+            .add_dataflow_op(TketOp::Tdg, [cond1.out_wire(0)])
+            .unwrap();
+        let mut hugr = builder.finish_hugr_with_outputs([tdg.out_wire(0)]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let mut custom_settings = |n: hugr::Node| {
+            if n == meas0.node() || n == meas1.node() {
+                DataflowSettings {
+                    flow_level: DataflowFlowDetail::All,
+                    include_external_interface: true,
+                    include_sum_types: true,
+                    include_loop_body: false,
+                    rotation_override: false,
+                }
+            } else {
+                default_settings(n)
+            }
+        };
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        assert_eq!(hugr.num_nodes(), 32);
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert!(hugr.validate().is_ok());
+        assert_eq!(hugr.num_nodes(), 30);
     }
 }

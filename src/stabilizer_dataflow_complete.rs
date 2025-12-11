@@ -15,7 +15,10 @@ use hugr::{
 use hugr_core::hugr::internal::PortgraphNodeMap;
 use itertools::{chain, Either, Itertools};
 use petgraph::visit::{self as pv};
-use tket::{TketOp, extension::bool::{BoolOp, bool_type}};
+use tket::{
+    extension::bool::{bool_type, BoolOp},
+    TketOp,
+};
 
 use crate::{
     bit_vector::BitVector,
@@ -854,20 +857,14 @@ impl<H: HugrView> StabilizerDataflow<H> {
             TketOp::Measure => {
                 if settings.rotation_override {
                     self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
-                        // Add a new qubit for the rotation
-                        let col_rot = tab.add_qubit();
-                        q_index_map.insert(DataflowPoint::Rotation(node), col_rot);
-                        // Z on input propagates through to output, so leave it unchanged
-                        // X on input copies to X on rotation and output
-                        // Applying a CX(col_in, col_rot) combines these two effects
-                        tab.append_cx(col_in, col_rot);
-                        // Add the remaining stabilizer between rotation and output
-                        let mut zz = BitVector::new(tab.nb_qubits);
-                        zz.xor_bit(col_in);
-                        zz.xor_bit(col_rot);
                         if settings.include_sum_types {
-                            // Include the classical output which copies the value in the rotation Pauli
-                            let col_ctrl = tab.add_qubit();
+                            // IORSRole
+                            // ZZ       Handled by qubit renaming
+                            // XXX Z    Qubit renaming and gates to copy X
+                            //  ZZ      Added as new stab
+                            //  Z ZX    Added as new stab
+                            let [col_rot, col_ctrl, col_role] = tab.add_n_qubits();
+                            q_index_map.insert(DataflowPoint::Rotation(node), col_rot);
                             q_index_map.insert(
                                 DataflowPoint::SumOutPhControl(
                                     node,
@@ -877,10 +874,62 @@ impl<H: HugrView> StabilizerDataflow<H> {
                                 ),
                                 col_ctrl,
                             );
-                            zz.xor_bit(col_ctrl);
+                            q_index_map.insert(DataflowPoint::RoleControl(node, 0), col_role);
+                            tab.append_cx(col_in, col_rot);
+                            tab.append_cz(col_in, col_role);
+                            let mut zz = BitVector::new(tab.nb_qubits);
+                            zz.xor_bit(col_in);
+                            zz.xor_bit(col_rot);
+                            let mut zzx_z = BitVector::new(tab.nb_qubits);
+                            zzx_z.xor_bit(col_in);
+                            zzx_z.xor_bit(col_ctrl);
+                            let mut zzx_x = BitVector::new(tab.nb_qubits);
+                            zzx_x.xor_bit(col_role);
+                            tab.add_stab(zz, BitVector::new(tab.nb_qubits), false);
+                            tab.add_stab(zzx_z, zzx_x, false);
+                            [col_in]
+                        } else {
+                            // IOR
+                            // ZZ   Handled by qubit renaming
+                            // XXX  Qubit renaming and CX gate to copy X
+                            //  ZZ  Added as new stab
+                            let col_rot = tab.add_qubit();
+                            q_index_map.insert(DataflowPoint::Rotation(node), col_rot);
+                            tab.append_cx(col_in, col_rot);
+                            let mut zz = BitVector::new(tab.nb_qubits);
+                            zz.xor_bit(col_in);
+                            zz.xor_bit(col_rot);
+                            tab.add_stab(zz, BitVector::new(tab.nb_qubits), false);
+                            [col_in]
                         }
-                        tab.add_stab(zz, BitVector::new(tab.nb_qubits), false);
-                        [col_in]
+
+                        // // Add a new qubit for the rotation
+                        // let col_rot = tab.add_qubit();
+                        // q_index_map.insert(DataflowPoint::Rotation(node), col_rot);
+                        // // Z on input propagates through to output, so leave it unchanged
+                        // // X on input copies to X on rotation and output
+                        // // Applying a CX(col_in, col_rot) combines these two effects
+                        // tab.append_cx(col_in, col_rot);
+                        // // Add the remaining stabilizer between rotation and output
+                        // let mut zz = BitVector::new(tab.nb_qubits);
+                        // zz.xor_bit(col_in);
+                        // zz.xor_bit(col_rot);
+                        // if settings.include_sum_types {
+                        //     // Include the classical output which copies the value in the rotation Pauli
+                        //     let col_ctrl = tab.add_qubit();
+                        //     q_index_map.insert(
+                        //         DataflowPoint::SumOutPhControl(
+                        //             node,
+                        //             OutgoingPort::from(1),
+                        //             vec![],
+                        //             0,
+                        //         ),
+                        //         col_ctrl,
+                        //     );
+                        //     zz.xor_bit(col_ctrl);
+                        // }
+                        // tab.add_stab(zz, BitVector::new(tab.nb_qubits), false);
+                        // [col_in]
                     });
                 } else {
                     self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
@@ -1000,13 +1049,14 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::MeasureFree => {
                 if settings.rotation_override {
-                    // Rather than needing a 3-ary Z spider, for MeasureFree we can use a 2-ary Z spider, i.e. an identity wire.
-                    // So just rename the qubit
                     self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
                         q_index_map.insert(DataflowPoint::Rotation(node), col_in);
                         if settings.include_sum_types {
-                            // Copy the result to the phase control; a CX will copy the Z component to Z on another qubit
-                            let ctrl = tab.add_qubit();
+                            // IRSRole
+                            // ZZ       Handled by qubit renaming
+                            // XX Z     Handled by qubit renaming and CZ to copy X to Z
+                            //  ZZX     Added as a new stab
+                            let [ctrl, role] = tab.add_n_qubits();
                             q_index_map.insert(
                                 DataflowPoint::SumOutPhControl(
                                     node,
@@ -1016,10 +1066,39 @@ impl<H: HugrView> StabilizerDataflow<H> {
                                 ),
                                 ctrl,
                             );
-                            tab.append_cx(ctrl, col_in);
+                            q_index_map.insert(DataflowPoint::RoleControl(node, 0), role);
+                            tab.append_cz(col_in, role);
+                            let mut zzx_z = BitVector::new(tab.nb_qubits);
+                            zzx_z.xor_bit(col_in);
+                            zzx_z.xor_bit(ctrl);
+                            let mut zzx_x = BitVector::new(tab.nb_qubits);
+                            zzx_x.xor_bit(role);
+                            tab.add_stab(zzx_z, zzx_x, false);
                         }
+                        // Without Sum types, we just need to track the input and the rotation; we can treat this as an identity wire so it is already implemented by qubit renaming
                         []
                     });
+
+                    // // Rather than needing a 3-ary Z spider, for MeasureFree we can use a 2-ary Z spider, i.e. an identity wire.
+                    // // So just rename the qubit
+                    // self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
+                    //     q_index_map.insert(DataflowPoint::Rotation(node), col_in);
+                    //     if settings.include_sum_types {
+                    //         // Copy the result to the phase control; a CX will copy the Z component to Z on another qubit
+                    //         let ctrl = tab.add_qubit();
+                    //         q_index_map.insert(
+                    //             DataflowPoint::SumOutPhControl(
+                    //                 node,
+                    //                 OutgoingPort::from(0),
+                    //                 vec![],
+                    //                 0,
+                    //             ),
+                    //             ctrl,
+                    //         );
+                    //         tab.append_cx(ctrl, col_in);
+                    //     }
+                    //     []
+                    // });
                 } else if settings.include_sum_types {
                     // Either post-selection would project away Xs and store the outcome in +-Z, so it is enough to project the Xs and rename the qubit to the measurement outcome
                     self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
@@ -1929,6 +2008,59 @@ impl<H: HugrView> SDFAnalysis<H> {
                                                 false,
                                             );
                                         }
+                                    }
+                                    BoolOp::read | BoolOp::make_opaque => {
+                                        // Both of these act as an identity, just converting between the opaque boolean and Sum[unit, unit].
+                                        // Because of the way we handle classical values via propagations, we need to introduce two new sum controls (one for the input, one for the output) and propagate the values all the way along
+                                        let (pred_node, pred_port) = hugr
+                                            .single_linked_output(node, IncomingPort::from(0))
+                                            .unwrap();
+                                        let [sumin, sumout] = summary.tab.add_n_qubits();
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumInPhControl(
+                                                node,
+                                                IncomingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumin,
+                                        );
+                                        summary.q_index_map.insert(
+                                            DataflowPoint::SumOutPhControl(
+                                                node,
+                                                OutgoingPort::from(0),
+                                                vec![],
+                                                0,
+                                            ),
+                                            sumout,
+                                        );
+                                        if let Some(q) = summary.q_index_map.get_by_left(
+                                            &DataflowPoint::SumOutPhControl(
+                                                pred_node,
+                                                pred_port,
+                                                vec![],
+                                                0,
+                                            ),
+                                        ) {
+                                            // Propagate value from predecessor into the input
+                                            let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                            zz.xor_bit(*q);
+                                            zz.xor_bit(sumin);
+                                            summary.tab.add_stab(
+                                                zz,
+                                                BitVector::new(summary.tab.nb_qubits),
+                                                false,
+                                            );
+                                        }
+                                        // Propagate the value from the input to the output
+                                        let mut zz = BitVector::new(summary.tab.nb_qubits);
+                                        zz.xor_bit(sumin);
+                                        zz.xor_bit(sumout);
+                                        summary.tab.add_stab(
+                                            zz,
+                                            BitVector::new(summary.tab.nb_qubits),
+                                            false,
+                                        );
                                     }
                                     _ => {
                                         // BoolOps will always only involve classical data, so we just omit the classical values if we don't know the semantics of the op
@@ -3259,11 +3391,11 @@ mod test {
         let summary_map =
             SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut max_settings);
         let summary = summary_map.get(&func_node).unwrap().clone();
-        // 3 inputs, 3 outputs, 6 basic rotations, 1 classical value (measure), 4 interface + 8 role for crz, 6 interface + 12 role for toffoli
-        // 3+3+6+1+4+8+6+12=43
-        assert_eq!(summary.tab.nb_qubits, 43);
-        // One stabilizer per qubit in the choi state (3+3+6+4+6=22), plus one per flow stabilizer over crz and toffoli (2+3=5)
-        assert_eq!(summary.tab.nb_stabs, 27);
+        // 3 inputs, 3 outputs, 6 basic rotations, 1 classical value + 1 role for measure, 4 interface + 8 role for crz, 6 interface + 12 role for toffoli
+        // 3+3+6+2+4+8+6+12=44
+        assert_eq!(summary.tab.nb_qubits, 44);
+        // One stabilizer per qubit in the choi state (3+3+6+4+6=22), plus one per flow stabilizer over measure, crz and toffoli (1+2+3=6)
+        assert_eq!(summary.tab.nb_stabs, 28);
         let in_node = hugr
             .children(func_node)
             .filter(|n| matches!(hugr.get_optype(*n), OpType::Input(_)))
@@ -3331,188 +3463,197 @@ mod test {
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&13).unwrap(),
-            DataflowPoint::RoleControl(crz.node(), 6)
+            DataflowPoint::RoleControl(meas.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&14).unwrap(),
-            DataflowPoint::NodeIn(crz.node(), IncomingPort::from(0), vec![])
+            DataflowPoint::RoleControl(crz.node(), 6)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&15).unwrap(),
-            DataflowPoint::RoleControl(crz.node(), 7)
+            DataflowPoint::NodeIn(crz.node(), IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&16).unwrap(),
-            DataflowPoint::NodeIn(crz.node(), IncomingPort::from(1), vec![])
+            DataflowPoint::RoleControl(crz.node(), 7)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&17).unwrap(),
-            DataflowPoint::NodeOut(crz.node(), OutgoingPort::from(0), vec![])
+            DataflowPoint::NodeIn(crz.node(), IncomingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&18).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 7)
+            DataflowPoint::NodeOut(crz.node(), OutgoingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&19).unwrap(),
-            DataflowPoint::NodeOut(crz.node(), OutgoingPort::from(1), vec![])
+            DataflowPoint::RoleControl(toffoli.node(), 7)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&20).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 8)
+            DataflowPoint::NodeOut(crz.node(), OutgoingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&21).unwrap(),
-            DataflowPoint::RoleControl(crz.node(), 0)
+            DataflowPoint::RoleControl(toffoli.node(), 8)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&22).unwrap(),
-            DataflowPoint::RoleControl(crz.node(), 1)
+            DataflowPoint::RoleControl(crz.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&23).unwrap(),
-            DataflowPoint::RoleControl(crz.node(), 2)
+            DataflowPoint::RoleControl(crz.node(), 1)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&24).unwrap(),
-            DataflowPoint::RoleControl(crz.node(), 3)
+            DataflowPoint::RoleControl(crz.node(), 2)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&25).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 9)
+            DataflowPoint::RoleControl(crz.node(), 3)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&26).unwrap(),
-            DataflowPoint::NodeIn(toffoli.node(), IncomingPort::from(0), vec![])
+            DataflowPoint::RoleControl(toffoli.node(), 9)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&27).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 10)
+            DataflowPoint::NodeIn(toffoli.node(), IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&28).unwrap(),
-            DataflowPoint::NodeIn(toffoli.node(), IncomingPort::from(1), vec![])
+            DataflowPoint::RoleControl(toffoli.node(), 10)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&29).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 11)
+            DataflowPoint::NodeIn(toffoli.node(), IncomingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&30).unwrap(),
-            DataflowPoint::NodeIn(toffoli.node(), IncomingPort::from(2), vec![])
+            DataflowPoint::RoleControl(toffoli.node(), 11)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&31).unwrap(),
-            DataflowPoint::NodeOut(toffoli.node(), OutgoingPort::from(0), vec![])
+            DataflowPoint::NodeIn(toffoli.node(), IncomingPort::from(2), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&32).unwrap(),
-            DataflowPoint::NodeIn(out_node, IncomingPort::from(0), vec![])
+            DataflowPoint::NodeOut(toffoli.node(), OutgoingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&33).unwrap(),
-            DataflowPoint::NodeOut(toffoli.node(), OutgoingPort::from(1), vec![])
+            DataflowPoint::NodeIn(out_node, IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&34).unwrap(),
-            DataflowPoint::NodeIn(out_node, IncomingPort::from(1), vec![])
+            DataflowPoint::NodeOut(toffoli.node(), OutgoingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&35).unwrap(),
-            DataflowPoint::NodeOut(toffoli.node(), OutgoingPort::from(2), vec![])
+            DataflowPoint::NodeIn(out_node, IncomingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&36).unwrap(),
-            DataflowPoint::NodeIn(out_node, IncomingPort::from(2), vec![])
+            DataflowPoint::NodeOut(toffoli.node(), OutgoingPort::from(2), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&37).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 0)
+            DataflowPoint::NodeIn(out_node, IncomingPort::from(2), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&38).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 1)
+            DataflowPoint::RoleControl(toffoli.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&39).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 2)
+            DataflowPoint::RoleControl(toffoli.node(), 1)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&40).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 3)
+            DataflowPoint::RoleControl(toffoli.node(), 2)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&41).unwrap(),
-            DataflowPoint::RoleControl(toffoli.node(), 4)
+            DataflowPoint::RoleControl(toffoli.node(), 3)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&42).unwrap(),
+            DataflowPoint::RoleControl(toffoli.node(), 4)
+        );
+        assert_eq!(
+            *summary.q_index_map.get_by_right(&43).unwrap(),
             DataflowPoint::RoleControl(toffoli.node(), 5)
         );
 
         // To make checking this against our intentions easier, we will post-select onto flow information and onto interface information
         let mut flow_tab = summary.tab.clone();
-        // List the crz rcs followed by the toffoli rcs
+        // List the measurement rc, followed by crz rcs, then toffoli rcs
         let rcs = vec![
-            21, 22, 23, 24, 1, 3, 13, 15, 37, 38, 39, 40, 41, 42, 5, 18, 20, 25, 27, 29,
+            13, 22, 23, 24, 25, 1, 3, 14, 16, 38, 39, 40, 41, 42, 43, 5, 19, 21, 26, 28, 30,
         ];
         let flow_post_selects: Vec<(usize, PauliXZ, bool)> =
             rcs.iter().map(|q| (*q, PauliXZ::X, false)).collect_vec();
         flow_tab.post_select_1qs(&flow_post_selects);
         // Pick the echelon order to make interpreting the stabilizers easier
         // outs, rx, ry, meas, meas.out, rz, tdg, t, ins
-        let flow_order = vec![32, 34, 36, 6, 7, 11, 12, 10, 9, 8, 0, 2, 4]
+        let flow_order = vec![33, 35, 37, 6, 7, 11, 12, 10, 9, 8, 0, 2, 4]
             .iter()
             .map(|q| [(*q, PauliXZ::Z), (*q, PauliXZ::X)])
             .flatten()
             .collect_vec();
         flow_tab.echelon(&flow_order);
-        // The remaining choi state for flow analysis has 3 ins, 3 outs, and 6 basic rotations, so a complete set of stabilizers would require 12, but we lose 3 from the Toffoli (the 2 lost from the CRz coincide with some already lost from the Toffoli)
-        assert_eq!(flow_tab.nb_stabs, 9);
+        // The remaining choi state for flow analysis has 3 ins, 3 outs, one classical value, and 6 basic rotations, so a complete set of stabilizers would require 13, but we lose 3 from the Toffoli (the 2 lost from the CRz coincide with some already lost from the Toffoli)
+        assert_eq!(flow_tab.nb_stabs, 10);
         // Zin0 Zout0
         assert_eq!(
             flow_tab.stab_as_string(0),
-            "+Z                               Z          "
+            "+Z                                Z          "
         );
         // Zin1 Xry Zout1
         assert_eq!(
             flow_tab.stab_as_string(1),
-            "+  Z    X                          Z        "
+            "+  Z    X                           Z        "
         );
         // Xin2 Xout2
         assert_eq!(
             flow_tab.stab_as_string(2),
-            "+    X                               X      "
+            "+    X                                X      "
         );
         // Xin2 Zrx
         assert_eq!(
             flow_tab.stab_as_string(3),
-            "+    X Z                                    "
+            "+    X Z                                     "
         );
         // -Yin1 Zry (the negation is because of the transposition for inputs)
         assert_eq!(
             flow_tab.stab_as_string(4),
-            "-  Y    Z                                   "
+            "-  Y    Z                                    "
         );
-        // Zin0 Zmeas Zmeas.out
+        // Zin0 Zmeas
         assert_eq!(
             flow_tab.stab_as_string(5),
-            "+Z          ZZ                              "
+            "+Z          Z                                "
+        );
+        // Zin0 Zmeas.out
+        assert_eq!(
+            flow_tab.stab_as_string(6),
+            "+Z           Z                               "
         );
         // Zin0 Zrz
         assert_eq!(
-            flow_tab.stab_as_string(6),
-            "+Z         Z                                "
+            flow_tab.stab_as_string(7),
+            "+Z         Z                                 "
         );
         // Zin0 Ztdg
         assert_eq!(
-            flow_tab.stab_as_string(7),
-            "+Z        Z                                 "
+            flow_tab.stab_as_string(8),
+            "+Z        Z                                  "
         );
         // Zin0 Zt
         assert_eq!(
-            flow_tab.stab_as_string(8),
-            "+Z       Z                                  "
+            flow_tab.stab_as_string(9),
+            "+Z       Z                                   "
         );
 
         let mut interface_tab = summary.tab.clone();
@@ -3522,7 +3663,7 @@ mod test {
         // Pick the echelon order to make interpreting the stabilizers easier
         // toffoli.outs, toffoli.ins, crz.outs, crz.ins, [flow_order]
         let interface_order = vec![
-            31, 33, 35, 26, 28, 30, 17, 19, 14, 16, 32, 34, 36, 6, 7, 11, 12, 10, 9, 8, 0, 2, 4,
+            32, 34, 36, 27, 29, 31, 18, 20, 15, 17, 33, 35, 37, 6, 7, 11, 12, 10, 9, 8, 0, 2, 4,
         ]
         .iter()
         .map(|q| [(*q, PauliXZ::Z), (*q, PauliXZ::X)])
@@ -3534,112 +3675,112 @@ mod test {
         // Ztof.out0 Zout0
         assert_eq!(
             interface_tab.stab_as_string(0),
-            "+                               ZZ          "
+            "+                                ZZ          "
         );
         // Xtof.out0 Xout0
         assert_eq!(
             interface_tab.stab_as_string(1),
-            "+                               XX          "
+            "+                                XX          "
         );
         // Ztof.out1 Zout1
         assert_eq!(
             interface_tab.stab_as_string(2),
-            "+                                 ZZ        "
+            "+                                  ZZ        "
         );
         // Xtof.out1 Xout1
         assert_eq!(
             interface_tab.stab_as_string(3),
-            "+                                 XX        "
+            "+                                  XX        "
         );
         // Ztof.out2 Zout2
         assert_eq!(
             interface_tab.stab_as_string(4),
-            "+                                   ZZ      "
+            "+                                    ZZ      "
         );
         // Xtof.out2 Xout2
         assert_eq!(
             interface_tab.stab_as_string(5),
-            "+                                   XX      "
+            "+                                    XX      "
         );
         // Zcrz.out0 Ztof.in0
         assert_eq!(
             interface_tab.stab_as_string(6),
-            "+                 Z        Z                "
+            "+                  Z        Z                "
         );
         // Xcrz.out0 Xtof.in0
         assert_eq!(
             interface_tab.stab_as_string(7),
-            "+                 X        X                "
+            "+                  X        X                "
         );
         // Zcrz.out1 Ztof.in1
         assert_eq!(
             interface_tab.stab_as_string(8),
-            "+                   Z        Z              "
+            "+                    Z        Z              "
         );
         // Xcrz.out1 Xtof.in1
         assert_eq!(
             interface_tab.stab_as_string(9),
-            "+                   X        X              "
+            "+                    X        X              "
         );
         // Zin2 Xrx Ztof.in2
         assert_eq!(
             interface_tab.stab_as_string(10),
-            "+    Z X                       Z            "
+            "+    Z X                        Z            "
         );
         // Xin2 Xtof.in2
         assert_eq!(
             interface_tab.stab_as_string(11),
-            "+    X                         X            "
+            "+    X                          X            "
         );
         // Zin0 Zcrz.in0
         assert_eq!(
             interface_tab.stab_as_string(12),
-            "+Z             Z                            "
+            "+Z              Z                            "
         );
         // Xin0 Xt Xtdg Xrz Xmeas Xcrz.in0
         assert_eq!(
             interface_tab.stab_as_string(13),
-            "+X       XXXX  X                            "
+            "+X       XXXX   X                            "
         );
         // Zin1 Xry Zcrz.in1
         assert_eq!(
             interface_tab.stab_as_string(14),
-            "+  Z    X        Z                          "
+            "+  Z    X         Z                          "
         );
         // Xin1 Xry Xcrz.in1
         assert_eq!(
             interface_tab.stab_as_string(15),
-            "+  X    X        X                          "
+            "+  X    X         X                          "
         );
         // Xin2 Zrx
         assert_eq!(
             interface_tab.stab_as_string(16),
-            "+    X Z                                    "
+            "+    X Z                                     "
         );
         // -Yin1 Zry (the negation is because of the transposition for inputs)
         assert_eq!(
             interface_tab.stab_as_string(17),
-            "-  Y    Z                                   "
+            "-  Y    Z                                    "
         );
-        // Zin0 Zmeas Zmeas.out
+        // Zin0 Zmeas
         assert_eq!(
             interface_tab.stab_as_string(18),
-            "+Z          ZZ                              "
+            "+Z          Z                                "
         );
         // Zin Zrz
         assert_eq!(
             interface_tab.stab_as_string(19),
-            "+Z         Z                                "
+            "+Z         Z                                 "
         );
         // Zin Ztdag
         assert_eq!(
             interface_tab.stab_as_string(20),
-            "+Z        Z                                 "
+            "+Z        Z                                  "
         );
         // Zin Zt
         assert_eq!(
             interface_tab.stab_as_string(21),
-            "+Z       Z                                  "
+            "+Z       Z                                   "
         );
     }
 
@@ -3687,11 +3828,11 @@ mod test {
             .ok()
             .unwrap();
 
-        // 2 inputs, 1 output, 1 rotation for MeasureFree, 1 classical for MeasureFree, 14 interface (1+4+2+0+2+4+1, 0 needed for MeasureFree), 14*2=28 role controls
-        // 2+1+1+1+14+28 = 47
-        assert_eq!(summary.tab.nb_qubits, 47);
+        // 2 inputs, 1 output, 1 rotation for MeasureFree, 1 classical for MeasureFree, 14 interface (1+4+2+0+2+4+1, 0 needed for MeasureFree), 1+14*2=29 role controls
+        // 2+1+1+1+14+28 = 48
+        assert_eq!(summary.tab.nb_qubits, 48);
         // One stabilizer per qubit in the choi state (2+1+1+14=18), plus one per flow stabilizer added (1+4+1+1+2+4=13)
-        assert_eq!(summary.tab.nb_stabs, 30);
+        assert_eq!(summary.tab.nb_stabs, 31);
         assert_eq!(
             *summary.q_index_map.get_by_right(&0).unwrap(),
             DataflowPoint::NodeOut(in_node, OutgoingPort::from(0), vec![])
@@ -3778,106 +3919,110 @@ mod test {
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&21).unwrap(),
-            DataflowPoint::RoleControl(reset.node(), 3)
+            DataflowPoint::RoleControl(meas.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&22).unwrap(),
-            DataflowPoint::NodeIn(reset.node(), IncomingPort::from(0), vec![])
+            DataflowPoint::RoleControl(reset.node(), 3)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&23).unwrap(),
-            DataflowPoint::NodeOut(reset.node(), OutgoingPort::from(0), vec![])
+            DataflowPoint::NodeIn(reset.node(), IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&24).unwrap(),
-            DataflowPoint::RoleControl(h.node(), 2)
+            DataflowPoint::NodeOut(reset.node(), OutgoingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&25).unwrap(),
-            DataflowPoint::RoleControl(reset.node(), 0)
+            DataflowPoint::RoleControl(h.node(), 2)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&26).unwrap(),
-            DataflowPoint::RoleControl(reset.node(), 1)
+            DataflowPoint::RoleControl(reset.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&27).unwrap(),
-            DataflowPoint::RoleControl(h.node(), 3)
+            DataflowPoint::RoleControl(reset.node(), 1)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&28).unwrap(),
-            DataflowPoint::NodeIn(h.node(), IncomingPort::from(0), vec![])
+            DataflowPoint::RoleControl(h.node(), 3)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&29).unwrap(),
-            DataflowPoint::NodeOut(h.node(), OutgoingPort::from(0), vec![])
+            DataflowPoint::NodeIn(h.node(), IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&30).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 5)
+            DataflowPoint::NodeOut(h.node(), OutgoingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&31).unwrap(),
-            DataflowPoint::RoleControl(h.node(), 0)
+            DataflowPoint::RoleControl(cx1.node(), 5)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&32).unwrap(),
-            DataflowPoint::RoleControl(h.node(), 1)
+            DataflowPoint::RoleControl(h.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&33).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 6)
+            DataflowPoint::RoleControl(h.node(), 1)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&34).unwrap(),
-            DataflowPoint::NodeIn(cx1.node(), IncomingPort::from(0), vec![])
+            DataflowPoint::RoleControl(cx1.node(), 6)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&35).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 7)
+            DataflowPoint::NodeIn(cx1.node(), IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&36).unwrap(),
-            DataflowPoint::NodeIn(cx1.node(), IncomingPort::from(1), vec![])
+            DataflowPoint::RoleControl(cx1.node(), 7)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&37).unwrap(),
-            DataflowPoint::NodeOut(cx1.node(), OutgoingPort::from(0), vec![])
+            DataflowPoint::NodeIn(cx1.node(), IncomingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&38).unwrap(),
-            DataflowPoint::NodeIn(out_node, IncomingPort::from(0), vec![])
+            DataflowPoint::NodeOut(cx1.node(), OutgoingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&39).unwrap(),
-            DataflowPoint::NodeOut(cx1.node(), OutgoingPort::from(1), vec![])
+            DataflowPoint::NodeIn(out_node, IncomingPort::from(0), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&40).unwrap(),
-            DataflowPoint::RoleControl(qfree.node(), 0)
+            DataflowPoint::NodeOut(cx1.node(), OutgoingPort::from(1), vec![])
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&41).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 0)
+            DataflowPoint::RoleControl(qfree.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&42).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 1)
+            DataflowPoint::RoleControl(cx1.node(), 0)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&43).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 2)
+            DataflowPoint::RoleControl(cx1.node(), 1)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&44).unwrap(),
-            DataflowPoint::RoleControl(cx1.node(), 3)
+            DataflowPoint::RoleControl(cx1.node(), 2)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&45).unwrap(),
-            DataflowPoint::RoleControl(qfree.node(), 1)
+            DataflowPoint::RoleControl(cx1.node(), 3)
         );
         assert_eq!(
             *summary.q_index_map.get_by_right(&46).unwrap(),
+            DataflowPoint::RoleControl(qfree.node(), 1)
+        );
+        assert_eq!(
+            *summary.q_index_map.get_by_right(&47).unwrap(),
             DataflowPoint::NodeIn(qfree.node(), IncomingPort::from(0), vec![])
         );
 
@@ -3885,31 +4030,31 @@ mod test {
         let mut flow_tab = summary.tab.clone();
         // List the rcs to post-select (grouped by node)
         let rcs = vec![
-            6, 7, 16, 17, 18, 19, 1, 3, 8, 10, 25, 26, 13, 21, 31, 32, 24, 27, 41, 42, 43, 44, 5,
-            30, 33, 35, 40, 45,
+            6, 7, 16, 17, 18, 19, 1, 3, 8, 10, 26, 27, 13, 22, 21, 32, 33, 25, 28, 42, 43, 44, 45,
+            5, 31, 34, 36, 41, 46,
         ];
         let flow_post_selects: Vec<(usize, PauliXZ, bool)> =
             rcs.iter().map(|q| (*q, PauliXZ::X, false)).collect_vec();
         flow_tab.post_select_1qs(&flow_post_selects);
         // Pick the echelon order to make interpreting the stabilizers easier
         // outs, meas, meas.out, ins
-        let flow_order = vec![38, 15, 20, 0, 2]
+        let flow_order = vec![39, 15, 20, 0, 2]
             .iter()
             .map(|q| [(*q, PauliXZ::Z), (*q, PauliXZ::X)])
             .flatten()
             .collect_vec();
         flow_tab.echelon(&flow_order);
-        // The remaining state can be purified onto 2 inputs, 1 output, 2 discards (QFree and Reset), and 1 basic rotation (MeasureFree), so a complete set of stabilizers would have 6, but the discards remove 2 each, leaving 2 left
+        // The remaining state can be purified onto 2 inputs, 1 output, 2 discards (QFree and Reset), 1 basic rotation and 1 classical value (MeasureFree), so a complete set of stabilizers would have 7, but the MeasureFree is short one and the discards remove 2 each, leaving 2 left
         assert_eq!(flow_tab.nb_stabs, 2);
-        // Zin0 Zin1 Zmeas Zmeas.out
+        // Zin0 Zin1 Zmeas
         assert_eq!(
             flow_tab.stab_as_string(0),
-            "+Z Z            Z    Z                          "
+            "+Z Z            Z                                "
         );
         // Xin1 Xmeas
         assert_eq!(
             flow_tab.stab_as_string(1),
-            "+  X            X                               "
+            "+Z Z                 Z                           "
         );
 
         // Post-select onto interface information
@@ -3920,8 +4065,8 @@ mod test {
         // Pick the echelon order to make interpreting the stabilizers easier
         // qfree.ins, cx1.outs, cx1.ins, h.outs, h.ins, reset.outs, reset.ins, cx0.outs, cx0.ins, qalloc.outs, [flow_order]
         let interface_order = vec![
-            46, 37, 39, 34, 36, 28, 29, 22, 23, 12, 14, 9, 11, 4, 6, 7, 16, 17, 18, 19, 1, 3, 8,
-            10, 25, 26, 13, 21, 31, 32, 24, 27, 41, 42, 43, 44, 5, 30, 33, 35, 40, 45,
+            47, 38, 40, 35, 37, 29, 30, 23, 24, 12, 14, 9, 11, 4, 6, 7, 16, 17, 18, 19, 1, 3, 8,
+            10, 26, 27, 13, 22, 32, 33, 25, 28, 42, 43, 44, 45, 5, 31, 34, 36, 41, 46,
         ]
         .iter()
         .map(|q| [(*q, PauliXZ::Z), (*q, PauliXZ::X)])
@@ -3930,96 +4075,97 @@ mod test {
         interface_tab.echelon(&interface_order);
         // 18 qubits left in the Choi state, so we get a complete set of 18 stabilizers
         // Note that 2+18 != 30, i.e. in projecting into these two cases, we have lost 10 stabilizers. Those 10 lost are those that depend on taking the flow data of some gates and the interface data of others. For example, the fact that X flows through the target of cx0 requires us to post-select onto flow for cx0 and onto interface for reset, since the main inference from it (Xin1 Xreset.in0) is removed when we factor in the discarding effect of the reset. Testing the full tableau might be preferable, but it is definitely much harder to a human to decipher enough to write the damn test
+        println!("{}", interface_tab);
         assert_eq!(interface_tab.nb_stabs, 18);
         // Zcx1.out1 Zqfree.in0
         assert_eq!(
             interface_tab.stab_as_string(0),
-            "+                                       Z      Z"
+            "+                                        Z      Z"
         );
         // Xcx1.out1 Xqfree.in0
         assert_eq!(
             interface_tab.stab_as_string(1),
-            "+                                       X      X"
+            "+                                        X      X"
         );
         // Zcx1.out0 Zout0
         assert_eq!(
             interface_tab.stab_as_string(2),
-            "+                                     ZZ        "
+            "+                                      ZZ        "
         );
         // Xcx1.out0 Xout0
         assert_eq!(
             interface_tab.stab_as_string(3),
-            "+                                     XX        "
+            "+                                      XX        "
         );
         // Zh.out0 Zcx1.in0
         assert_eq!(
             interface_tab.stab_as_string(4),
-            "+                             Z    Z            "
+            "+                              Z    Z            "
         );
         // Xh.out0 Xcx1.in0
         assert_eq!(
             interface_tab.stab_as_string(5),
-            "+                             X    X            "
+            "+                              X    X            "
         );
         // Zqalloc.out0 Zcx1.in1
         assert_eq!(
             interface_tab.stab_as_string(6),
-            "+    Z                               Z          "
+            "+    Z                                Z          "
         );
         // Xqalloc.out0 Xcx1.in1
         assert_eq!(
             interface_tab.stab_as_string(7),
-            "+    X                               X          "
+            "+    X                                X          "
         );
         // Zreset.out0 Zh.in0
         assert_eq!(
             interface_tab.stab_as_string(8),
-            "+                       Z    Z                  "
+            "+                        Z    Z                  "
         );
         // Xreset.out0 Xh.in0
         assert_eq!(
             interface_tab.stab_as_string(9),
-            "+                       X    X                  "
+            "+                        X    X                  "
         );
         // Zcx0.out0 Zreset.in0
         assert_eq!(
             interface_tab.stab_as_string(10),
-            "+            Z         Z                        "
+            "+            Z          Z                        "
         );
         // Xcx0.out0 Xreset.in0
         assert_eq!(
             interface_tab.stab_as_string(11),
-            "+            X         X                        "
+            "+            X          X                        "
         );
-        // Zcx0.out1 Zmeas Zmeas.out
+        // Zcx0.out1 Zmeas
         assert_eq!(
             interface_tab.stab_as_string(12),
-            "+              ZZ    Z                          "
+            "+              ZZ                                "
         );
         // Xcx0.out1 Xmeas
         assert_eq!(
             interface_tab.stab_as_string(13),
-            "+              XX                               "
+            "+              XX                                "
         );
         // Zin0 Zcx0.in0
         assert_eq!(
             interface_tab.stab_as_string(14),
-            "+Z        Z                                     "
+            "+Z        Z                                      "
         );
         // Xin0 Xcx0.in0
         assert_eq!(
             interface_tab.stab_as_string(15),
-            "+X        X                                     "
+            "+X        X                                      "
         );
         // Zin1 Zcx0.in1
         assert_eq!(
             interface_tab.stab_as_string(16),
-            "+  Z        Z                                   "
+            "+  Z        Z                                    "
         );
         // Xin1 Xcx0.in1
         assert_eq!(
             interface_tab.stab_as_string(17),
-            "+  X        X                                   "
+            "+  X        X                                    "
         );
     }
 
