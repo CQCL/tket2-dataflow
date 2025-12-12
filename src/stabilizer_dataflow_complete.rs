@@ -902,34 +902,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                             tab.add_stab(zz, BitVector::new(tab.nb_qubits), false);
                             [col_in]
                         }
-
-                        // // Add a new qubit for the rotation
-                        // let col_rot = tab.add_qubit();
-                        // q_index_map.insert(DataflowPoint::Rotation(node), col_rot);
-                        // // Z on input propagates through to output, so leave it unchanged
-                        // // X on input copies to X on rotation and output
-                        // // Applying a CX(col_in, col_rot) combines these two effects
-                        // tab.append_cx(col_in, col_rot);
-                        // // Add the remaining stabilizer between rotation and output
-                        // let mut zz = BitVector::new(tab.nb_qubits);
-                        // zz.xor_bit(col_in);
-                        // zz.xor_bit(col_rot);
-                        // if settings.include_sum_types {
-                        //     // Include the classical output which copies the value in the rotation Pauli
-                        //     let col_ctrl = tab.add_qubit();
-                        //     q_index_map.insert(
-                        //         DataflowPoint::SumOutPhControl(
-                        //             node,
-                        //             OutgoingPort::from(1),
-                        //             vec![],
-                        //             0,
-                        //         ),
-                        //         col_ctrl,
-                        //     );
-                        //     zz.xor_bit(col_ctrl);
-                        // }
-                        // tab.add_stab(zz, BitVector::new(tab.nb_qubits), false);
-                        // [col_in]
                     });
                 } else {
                     self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
@@ -1078,27 +1050,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
                         // Without Sum types, we just need to track the input and the rotation; we can treat this as an identity wire so it is already implemented by qubit renaming
                         []
                     });
-
-                    // // Rather than needing a 3-ary Z spider, for MeasureFree we can use a 2-ary Z spider, i.e. an identity wire.
-                    // // So just rename the qubit
-                    // self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
-                    //     q_index_map.insert(DataflowPoint::Rotation(node), col_in);
-                    //     if settings.include_sum_types {
-                    //         // Copy the result to the phase control; a CX will copy the Z component to Z on another qubit
-                    //         let ctrl = tab.add_qubit();
-                    //         q_index_map.insert(
-                    //             DataflowPoint::SumOutPhControl(
-                    //                 node,
-                    //                 OutgoingPort::from(0),
-                    //                 vec![],
-                    //                 0,
-                    //             ),
-                    //             ctrl,
-                    //         );
-                    //         tab.append_cx(ctrl, col_in);
-                    //     }
-                    //     []
-                    // });
                 } else if settings.include_sum_types {
                     // Either post-selection would project away Xs and store the outcome in +-Z, so it is enough to project the Xs and rename the qubit to the measurement outcome
                     self.apply_op_with(hugr, node, |tab, q_index_map, [col_in]| {
@@ -4075,7 +4026,6 @@ mod test {
         interface_tab.echelon(&interface_order);
         // 18 qubits left in the Choi state, so we get a complete set of 18 stabilizers
         // Note that 2+18 != 30, i.e. in projecting into these two cases, we have lost 10 stabilizers. Those 10 lost are those that depend on taking the flow data of some gates and the interface data of others. For example, the fact that X flows through the target of cx0 requires us to post-select onto flow for cx0 and onto interface for reset, since the main inference from it (Xin1 Xreset.in0) is removed when we factor in the discarding effect of the reset. Testing the full tableau might be preferable, but it is definitely much harder to a human to decipher enough to write the damn test
-        println!("{}", interface_tab);
         assert_eq!(interface_tab.nb_stabs, 18);
         // Zcx1.out1 Zqfree.in0
         assert_eq!(

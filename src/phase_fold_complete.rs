@@ -1126,9 +1126,9 @@ mod test {
             SubContainer,
         },
         extension::prelude::{bool_t, qb_t, usize_t},
-        ops::handle::NodeHandle,
+        ops::{handle::NodeHandle, Tag},
         type_row,
-        types::Signature,
+        types::{Signature, Type},
         Hugr, HugrView,
     };
     use rstest::fixture;
@@ -1709,5 +1709,448 @@ mod test {
         pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
         assert!(hugr.validate().is_ok());
         assert_eq!(hugr.num_nodes(), 30);
+    }
+
+    #[test]
+    fn test_merge_through_mbqc() {
+        // Build the MBQC pattern of Fig 2, doi:10.1088/1367-2630/9/8/250
+        // Implements ZII -> IXX, IZI -> XXX, IIZ -> XIX, XII -> ZIZ, IXI -> ZZZ, IIX -> IZZ
+        let mut builder = FunctionBuilder::new("mbqc", endo_sig(vec![qb_t(); 3])).unwrap();
+        let [qb0, qb1, qb2] = builder.input_wires_arr();
+        // Rotations on inputs
+        let t_a = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
+        let t_b = builder.add_dataflow_op(TketOp::T, [qb1]).unwrap();
+        let tdg_c = builder.add_dataflow_op(TketOp::Tdg, [qb2]).unwrap();
+        // Set up graph state
+        let alloc_d = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let alloc_e = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let alloc_f = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let h_d = builder
+            .add_dataflow_op(TketOp::H, [alloc_d.out_wire(0)])
+            .unwrap();
+        let h_e = builder
+            .add_dataflow_op(TketOp::H, [alloc_e.out_wire(0)])
+            .unwrap();
+        let h_f = builder
+            .add_dataflow_op(TketOp::H, [alloc_f.out_wire(0)])
+            .unwrap();
+        let cz_ad = builder
+            .add_dataflow_op(TketOp::CZ, [t_a.out_wire(0), h_d.out_wire(0)])
+            .unwrap();
+        let cz_af = builder
+            .add_dataflow_op(TketOp::CZ, [cz_ad.out_wire(0), h_f.out_wire(0)])
+            .unwrap();
+        let cz_bd = builder
+            .add_dataflow_op(TketOp::CZ, [t_b.out_wire(0), cz_ad.out_wire(1)])
+            .unwrap();
+        let cz_be = builder
+            .add_dataflow_op(TketOp::CZ, [cz_bd.out_wire(0), h_e.out_wire(0)])
+            .unwrap();
+        let cz_bf = builder
+            .add_dataflow_op(TketOp::CZ, [cz_be.out_wire(0), cz_af.out_wire(1)])
+            .unwrap();
+        let cz_ce = builder
+            .add_dataflow_op(TketOp::CZ, [tdg_c.out_wire(0), cz_be.out_wire(1)])
+            .unwrap();
+        let cz_cf = builder
+            .add_dataflow_op(TketOp::CZ, [cz_ce.out_wire(0), cz_bf.out_wire(1)])
+            .unwrap();
+        // Measurements
+        let h_a = builder
+            .add_dataflow_op(TketOp::H, [cz_af.out_wire(0)])
+            .unwrap();
+        let h_b = builder
+            .add_dataflow_op(TketOp::H, [cz_bf.out_wire(0)])
+            .unwrap();
+        let h_c = builder
+            .add_dataflow_op(TketOp::H, [cz_cf.out_wire(0)])
+            .unwrap();
+        let meas_a = builder
+            .add_dataflow_op(TketOp::MeasureFree, [h_a.out_wire(0)])
+            .unwrap();
+        let meas_b = builder
+            .add_dataflow_op(TketOp::MeasureFree, [h_b.out_wire(0)])
+            .unwrap();
+        let meas_c = builder
+            .add_dataflow_op(TketOp::MeasureFree, [h_c.out_wire(0)])
+            .unwrap();
+        // Corrections
+        let cond_d_calc = builder
+            .add_dataflow_op(BoolOp::xor, [meas_b.out_wire(0), meas_c.out_wire(0)])
+            .unwrap();
+        let cond_e_calc = builder
+            .add_dataflow_op(BoolOp::xor, [meas_a.out_wire(0), meas_b.out_wire(0)])
+            .unwrap();
+        let cond_f_calc = builder
+            .add_dataflow_op(BoolOp::xor, [cond_e_calc.out_wire(0), meas_c.out_wire(0)])
+            .unwrap();
+        let cond_d_conv = builder
+            .add_dataflow_op(BoolOp::read, [cond_d_calc.out_wire(0)])
+            .unwrap();
+        let cond_e_conv = builder
+            .add_dataflow_op(BoolOp::read, [cond_e_calc.out_wire(0)])
+            .unwrap();
+        let cond_f_conv = builder
+            .add_dataflow_op(BoolOp::read, [cond_f_calc.out_wire(0)])
+            .unwrap();
+        let mut cond_d_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], cond_d_conv.out_wire(0)),
+                [(qb_t(), cz_bd.out_wire(1))],
+                vec![qb_t()].into(),
+            )
+            .unwrap();
+        let cond_d_builder0 = cond_d_builder.case_builder(0).unwrap();
+        let [cd0q] = cond_d_builder0.input_wires_arr();
+        cond_d_builder0.finish_with_outputs([cd0q]).ok();
+        let mut cond_d_builder1 = cond_d_builder.case_builder(1).unwrap();
+        let [cd1q] = cond_d_builder1.input_wires_arr();
+        let cd1x = cond_d_builder1.add_dataflow_op(TketOp::X, [cd1q]).unwrap();
+        cond_d_builder1.finish_with_outputs([cd1x.out_wire(0)]).ok();
+        let cond_d = cond_d_builder.finish_sub_container().unwrap();
+        let mut cond_e_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], cond_e_conv.out_wire(0)),
+                [(qb_t(), cz_ce.out_wire(1))],
+                vec![qb_t()].into(),
+            )
+            .unwrap();
+        let cond_e_builder0 = cond_e_builder.case_builder(0).unwrap();
+        let [ce0q] = cond_e_builder0.input_wires_arr();
+        cond_e_builder0.finish_with_outputs([ce0q]).ok();
+        let mut cond_e_builder1 = cond_e_builder.case_builder(1).unwrap();
+        let [ce1q] = cond_e_builder1.input_wires_arr();
+        let ce1x = cond_e_builder1.add_dataflow_op(TketOp::X, [ce1q]).unwrap();
+        cond_e_builder1.finish_with_outputs([ce1x.out_wire(0)]).ok();
+        let cond_e = cond_e_builder.finish_sub_container().unwrap();
+        let mut cond_f_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], cond_f_conv.out_wire(0)),
+                [(qb_t(), cz_cf.out_wire(1))],
+                vec![qb_t()].into(),
+            )
+            .unwrap();
+        let cond_f_builder0 = cond_f_builder.case_builder(0).unwrap();
+        let [cf0q] = cond_f_builder0.input_wires_arr();
+        cond_f_builder0.finish_with_outputs([cf0q]).ok();
+        let mut cond_f_builder1 = cond_f_builder.case_builder(1).unwrap();
+        let [cf1q] = cond_f_builder1.input_wires_arr();
+        let cf1x = cond_f_builder1.add_dataflow_op(TketOp::X, [cf1q]).unwrap();
+        cond_f_builder1.finish_with_outputs([cf1x.out_wire(0)]).ok();
+        let cond_f = cond_f_builder.finish_sub_container().unwrap();
+        // Rotations to merge
+        let cx_ef = builder
+            .add_dataflow_op(TketOp::CX, [cond_e.out_wire(0), cond_f.out_wire(0)])
+            .unwrap();
+        let cx_fd = builder
+            .add_dataflow_op(TketOp::CX, [cx_ef.out_wire(1), cond_d.out_wire(0)])
+            .unwrap();
+        let cx_de = builder
+            .add_dataflow_op(TketOp::CX, [cx_fd.out_wire(1), cx_ef.out_wire(0)])
+            .unwrap();
+        let h1_d = builder
+            .add_dataflow_op(TketOp::H, [cx_de.out_wire(0)])
+            .unwrap();
+        let h1_e = builder
+            .add_dataflow_op(TketOp::H, [cx_de.out_wire(1)])
+            .unwrap();
+        let h1_f = builder
+            .add_dataflow_op(TketOp::H, [cx_fd.out_wire(0)])
+            .unwrap();
+        let t_d = builder
+            .add_dataflow_op(TketOp::T, [h1_d.out_wire(0)])
+            .unwrap();
+        let tdg_e = builder
+            .add_dataflow_op(TketOp::Tdg, [h1_e.out_wire(0)])
+            .unwrap();
+        let tdg_f = builder
+            .add_dataflow_op(TketOp::Tdg, [h1_f.out_wire(0)])
+            .unwrap();
+        let mut hugr = builder
+            .finish_hugr_with_outputs([t_d.out_wire(0), tdg_e.out_wire(0), tdg_f.out_wire(0)])
+            .unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        assert_eq!(hugr.num_nodes(), 65);
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert!(hugr.validate().is_ok());
+        // t_a and t_d merge into an S gate
+        // t_b and tdg_e merge into an identity
+        // tdg_c and tdg_f merge into an Sdg gate
+        // Number of nodes drops by 4 in total
+        assert_eq!(hugr.num_nodes(), 61);
+    }
+
+    #[test]
+    fn test_nested_sums() {
+        let mut builder = FunctionBuilder::new(
+            "nested_sums_test",
+            Signature::new(vec![bool_t(), bool_t(), rotation_type()], vec![qb_t(); 4]),
+        )
+        .unwrap();
+        let [b0, b1, rot_angle] = builder.input_wires_arr();
+        // Prepare a Bell state
+        let qalloc0 = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let qalloc1 = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let hbell = builder
+            .add_dataflow_op(TketOp::H, [qalloc0.out_wire(0)])
+            .unwrap();
+        let cxbell = builder
+            .add_dataflow_op(TketOp::CX, [hbell.out_wire(0), qalloc1.out_wire(0)])
+            .unwrap();
+        // Depending on the value of b0, extend this Bell to a GHZ state in different ways
+        let mut cond_b0_builder = builder
+            .conditional_builder(
+                ([type_row![], type_row![]], b0),
+                [(qb_t(), cxbell.out_wire(0)), (qb_t(), cxbell.out_wire(1))],
+                vec![
+                    qb_t(),
+                    qb_t(),
+                    Type::new_sum([
+                        vec![qb_t(), Type::new_sum([vec![qb_t()], vec![qb_t()]])],
+                        vec![qb_t(), Type::new_sum([vec![], vec![qb_t()]])],
+                    ]),
+                ]
+                .into(),
+            )
+            .unwrap();
+
+        let mut cond_b0_0_builder = cond_b0_builder.case_builder(0).unwrap();
+        let [qb0, qb1] = cond_b0_0_builder.input_wires_arr();
+        let qalloc2_0 = cond_b0_0_builder
+            .add_dataflow_op(TketOp::QAlloc, [])
+            .unwrap();
+        let ghz_0 = cond_b0_0_builder
+            .add_dataflow_op(TketOp::CX, [qb0, qalloc2_0.out_wire(0)])
+            .unwrap();
+        let mut cond_b0_0_b1_builder = cond_b0_0_builder
+            .conditional_builder(
+                ([type_row![], type_row![]], b1),
+                [],
+                vec![Type::new_sum([vec![qb_t()], vec![qb_t()]])].into(),
+            )
+            .unwrap();
+        let mut cond_b0_0_b1_0_builder = cond_b0_0_b1_builder.case_builder(0).unwrap();
+        let qalloc3_00 = cond_b0_0_b1_0_builder
+            .add_dataflow_op(TketOp::QAlloc, [])
+            .unwrap();
+        let h_00 = cond_b0_0_b1_0_builder
+            .add_dataflow_op(TketOp::H, [qalloc3_00.out_wire(0)])
+            .unwrap();
+        let tag_00 = cond_b0_0_b1_0_builder
+            .add_dataflow_op(
+                Tag::new(0, vec![vec![qb_t()].into(); 2]),
+                [h_00.out_wire(0)],
+            )
+            .unwrap();
+        cond_b0_0_b1_0_builder
+            .finish_with_outputs([tag_00.out_wire(0)])
+            .ok();
+        let mut cond_b0_0_b1_1_builder = cond_b0_0_b1_builder.case_builder(1).unwrap();
+        let qalloc3_01 = cond_b0_0_b1_1_builder
+            .add_dataflow_op(TketOp::QAlloc, [])
+            .unwrap();
+        let x_01 = cond_b0_0_b1_1_builder
+            .add_dataflow_op(TketOp::X, [qalloc3_01.out_wire(0)])
+            .unwrap();
+        let tag_01 = cond_b0_0_b1_1_builder
+            .add_dataflow_op(
+                Tag::new(1, vec![vec![qb_t()].into(); 2]),
+                [x_01.out_wire(0)],
+            )
+            .unwrap();
+        cond_b0_0_b1_1_builder
+            .finish_with_outputs([tag_01.out_wire(0)])
+            .ok();
+        let cond_b0_0_b1 = cond_b0_0_b1_builder.finish_sub_container().unwrap();
+        let tag_0 = cond_b0_0_builder
+            .add_dataflow_op(
+                Tag::new(
+                    0,
+                    vec![
+                        vec![qb_t(), Type::new_sum([vec![qb_t()], vec![qb_t()]])].into(),
+                        vec![qb_t(), Type::new_sum([vec![], vec![qb_t()]])].into(),
+                    ],
+                ),
+                [ghz_0.out_wire(1), cond_b0_0_b1.out_wire(0)],
+            )
+            .unwrap();
+        cond_b0_0_builder
+            .finish_with_outputs([ghz_0.out_wire(0), qb1, tag_0.out_wire(0)])
+            .ok();
+
+        let mut cond_b0_1_builder = cond_b0_builder.case_builder(1).unwrap();
+        let [qb0, qb1] = cond_b0_1_builder.input_wires_arr();
+        let qalloc2_1 = cond_b0_1_builder
+            .add_dataflow_op(TketOp::QAlloc, [])
+            .unwrap();
+        let ghz_1 = cond_b0_1_builder
+            .add_dataflow_op(TketOp::CX, [qb1, qalloc2_1.out_wire(0)])
+            .unwrap();
+        let tryq = cond_b0_1_builder
+            .add_dataflow_op(TketOp::TryQAlloc, [])
+            .unwrap();
+        let tag_1 = cond_b0_1_builder
+            .add_dataflow_op(
+                Tag::new(
+                    1,
+                    vec![
+                        vec![qb_t(), Type::new_sum([vec![qb_t()], vec![qb_t()]])].into(),
+                        vec![qb_t(), Type::new_sum([vec![], vec![qb_t()]])].into(),
+                    ],
+                ),
+                [ghz_1.out_wire(1), tryq.out_wire(0)],
+            )
+            .unwrap();
+        cond_b0_1_builder
+            .finish_with_outputs([qb0, ghz_1.out_wire(0), tag_1.out_wire(0)])
+            .ok();
+        let cond_b0 = cond_b0_builder.finish_sub_container().unwrap();
+
+        // We have loaded this into a Sum[(qb, Sum[qb, qb]), (qb, Sum[qb, unit])]
+        // The following conditionals unpack this into (qb, Sum[qb, unit]) (discarding the second case of the Sum[qb, qb])
+        let mut unpack_builder = builder
+            .conditional_builder(
+                (
+                    [
+                        vec![qb_t(), Type::new_sum([vec![qb_t()], vec![qb_t()]])].into(),
+                        vec![qb_t(), Type::new_sum([vec![], vec![qb_t()]])].into(),
+                    ],
+                    cond_b0.out_wire(2),
+                ),
+                [],
+                vec![qb_t(), Type::new_sum([vec![], vec![qb_t()]])].into(),
+            )
+            .unwrap();
+        let mut unpack_0_builder = unpack_builder.case_builder(0).unwrap();
+        let [qb2, sumqq] = unpack_0_builder.input_wires_arr();
+        let mut unpack_0_unpack_builder = unpack_0_builder
+            .conditional_builder(
+                ([vec![qb_t()].into(), vec![qb_t()].into()], sumqq),
+                [],
+                Type::new_sum([vec![], vec![qb_t()]]).into(),
+            )
+            .unwrap();
+        let mut unpack_0_unpack_0_builder = unpack_0_unpack_builder.case_builder(0).unwrap();
+        let [qb3] = unpack_0_unpack_0_builder.input_wires_arr();
+        let t_to_discard = unpack_0_unpack_0_builder
+            .add_dataflow_op(TketOp::T, [qb3])
+            .unwrap();
+        let v_to_discard = unpack_0_unpack_0_builder
+            .add_dataflow_op(TketOp::V, [t_to_discard.out_wire(0)])
+            .unwrap();
+        let _qfree = unpack_0_unpack_0_builder
+            .add_dataflow_op(TketOp::QFree, [v_to_discard.out_wire(0)])
+            .unwrap();
+        let tag_qu_0 = unpack_0_unpack_0_builder
+            .add_dataflow_op(Tag::new(0, vec![type_row![], vec![qb_t()].into()]), [])
+            .unwrap();
+        unpack_0_unpack_0_builder
+            .finish_with_outputs([tag_qu_0.out_wire(0)])
+            .ok();
+        let mut unpack_0_unpack_1_builder = unpack_0_unpack_builder.case_builder(1).unwrap();
+        let [qb3] = unpack_0_unpack_1_builder.input_wires_arr();
+        let tag_qu_1 = unpack_0_unpack_1_builder
+            .add_dataflow_op(Tag::new(1, vec![type_row![], vec![qb_t()].into()]), [qb3])
+            .unwrap();
+        unpack_0_unpack_1_builder
+            .finish_with_outputs([tag_qu_1.out_wire(0)])
+            .ok();
+        let unpack_0_unpack = unpack_0_unpack_builder.finish_sub_container().unwrap();
+        unpack_0_builder
+            .finish_with_outputs([qb2, unpack_0_unpack.out_wire(0)])
+            .ok();
+        let unpack_1_builder = unpack_builder.case_builder(1).unwrap();
+        let [qb2, sumqu] = unpack_1_builder.input_wires_arr();
+        unpack_1_builder.finish_with_outputs([qb2, sumqu]).ok();
+        let unpack = unpack_builder.finish_sub_container().unwrap();
+
+        // Regardless of the classical branching taken to arrive here, the first three qubits share a GHZ state, so we can merge Rz rotations on all of them
+        let rz0 = builder
+            .add_dataflow_op(TketOp::Rz, [cond_b0.out_wire(0), rot_angle])
+            .unwrap();
+        let rz1 = builder
+            .add_dataflow_op(TketOp::Rz, [cond_b0.out_wire(1), rot_angle])
+            .unwrap();
+        let rz2 = builder
+            .add_dataflow_op(TketOp::Rz, [unpack.out_wire(0), rot_angle])
+            .unwrap();
+        // Within the Sum[qb, unit], the qubit is always a computational basis state, so a T on it can be removed
+        let mut final_cond_builder = builder
+            .conditional_builder(
+                ([type_row![], vec![qb_t()].into()], unpack.out_wire(1)),
+                [],
+                vec![qb_t()].into(),
+            )
+            .unwrap();
+        let mut final_cond_0_builder = final_cond_builder.case_builder(0).unwrap();
+        let qalloc3 = final_cond_0_builder
+            .add_dataflow_op(TketOp::QAlloc, [])
+            .unwrap();
+        final_cond_0_builder
+            .finish_with_outputs([qalloc3.out_wire(0)])
+            .ok();
+        let mut final_cond_1_builder = final_cond_builder.case_builder(1).unwrap();
+        let [qb3] = final_cond_1_builder.input_wires_arr();
+        let t_constant = final_cond_1_builder
+            .add_dataflow_op(TketOp::T, [qb3])
+            .unwrap();
+        final_cond_1_builder
+            .finish_with_outputs([t_constant.out_wire(0)])
+            .ok();
+        let final_cond = final_cond_builder.finish_sub_container().unwrap();
+
+        let mut hugr = builder
+            .finish_hugr_with_outputs([
+                rz0.out_wire(0),
+                rz1.out_wire(0),
+                rz2.out_wire(0),
+                final_cond.out_wire(0),
+            ])
+            .unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let mut max_settings = |_: hugr::Node| DataflowSettings {
+            flow_level: DataflowFlowDetail::All,
+            include_external_interface: true,
+            include_sum_types: true,
+            include_loop_body: true,
+            rotation_override: true,
+        };
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut max_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        assert_eq!(hugr.num_nodes(), 66);
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert!(hugr.validate().is_ok());
+        // Both T gates get removed
+        assert_eq!(hugr.num_nodes(), 64);
+        let t_count = hugr
+            .nodes()
+            .filter(|n| {
+                let Some(extop) = hugr.get_optype(*n).as_extension_op() else {
+                    return false;
+                };
+                *extop == TketOp::T.into_extension_op()
+            })
+            .count();
+        assert_eq!(t_count, 0);
+        // At the moment, the Rz gates will not be merged. This is because of the eager combinations of the conditionals. The conditional does not know that the input is a Bell state, so the actions of the CX gates are distinct and therefore get entangled with control qubits. We then compose it onto the Bell state, at which point both branches generate the same stabilizer but there are still distinct copies of that stabilizer with Zs and Xs on the control qubits.
+        // Once we have implemented a project-and-recombine pass on dataflow tableaus, we could run that on the first conditional input to identify the GHZ state is invariant and therefore we can merge more gates here.
+        let rz_count = hugr
+            .nodes()
+            .filter(|n| {
+                let Some(extop) = hugr.get_optype(*n).as_extension_op() else {
+                    return false;
+                };
+                *extop == TketOp::Rz.into_extension_op()
+            })
+            .count();
+        assert_eq!(rz_count, 3);
     }
 }

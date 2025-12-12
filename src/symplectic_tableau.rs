@@ -157,10 +157,10 @@ impl SymplecticTableau {
         let qb_base = self.nb_qubits;
         self.nb_qubits += nb_new_qbs;
         for zv in &mut self.z {
-            zv.extend_vec(vec![false; nb_new_qbs], nb_new_qbs);
+            zv.extend_vec(vec![false; nb_new_qbs], qb_base);
         }
         for xv in &mut self.x {
-            xv.extend_vec(vec![false; nb_new_qbs], nb_new_qbs);
+            xv.extend_vec(vec![false; nb_new_qbs], qb_base);
         }
         qb_base
     }
