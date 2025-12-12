@@ -1129,8 +1129,9 @@ mod test {
         ops::{handle::NodeHandle, Tag},
         type_row,
         types::{Signature, Type},
-        Hugr, HugrView,
+        Hugr, HugrView, IncomingPort,
     };
+    use itertools::Either;
     use rstest::fixture;
     use tket::{
         extension::{bool::BoolOp, rotation::rotation_type},
@@ -2043,7 +2044,7 @@ mod test {
         let v_to_discard = unpack_0_unpack_0_builder
             .add_dataflow_op(TketOp::V, [t_to_discard.out_wire(0)])
             .unwrap();
-        let _qfree = unpack_0_unpack_0_builder
+        let qfree = unpack_0_unpack_0_builder
             .add_dataflow_op(TketOp::QFree, [v_to_discard.out_wire(0)])
             .unwrap();
         let tag_qu_0 = unpack_0_unpack_0_builder
@@ -2113,22 +2114,34 @@ mod test {
             ])
             .unwrap();
         let func_node = hugr.first_child(hugr.module_root()).unwrap();
-        let mut max_settings = |_: hugr::Node| DataflowSettings {
+        let mut custom_settings = |n: hugr::Node| DataflowSettings {
             flow_level: DataflowFlowDetail::All,
-            include_external_interface: true,
+            // If interface information is included for the conditional CX gates, then even with recalculation of controls we cannot identify the GHZ state as independent of the branches since in each branch its stabilizers are dependent on the flow role of different CXs.
+            // This isn't a problem if we don't include the interface information for them.
+            // We still want the interface information for the QFree so we can discard the first T.
+            include_external_interface: n == qfree.node(),
             include_sum_types: true,
             include_loop_body: true,
             rotation_override: true,
         };
         let summary_map =
-            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut max_settings);
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
         let mut summary = summary_map.get(&func_node).unwrap().clone();
+        // The eager combinations of the conditionals still prevents the GHZ state from being identified as independent of the branches. The conditional does not know that the input is a Bell state, so the actions of the CX gates are distinct and therefore get entangled with control qubits. We then compose it onto the Bell state, at which point both branches generate the same stabilizer but there are still distinct copies of that stabilizer with Zs and Xs on the control qubits.
+        // However, after the composition with the Bell state, we can now recalculate the control and see the GHZ state is common regardless of the input bit.
+        summary = summary.recalculate_control(
+            cond_b0.node(),
+            Either::Left(IncomingPort::from(0)),
+            &vec![],
+            0,
+        );
         assert_eq!(hugr.num_nodes(), 66);
         let mut pf = PhaseFold::new();
         pf.find_folds(&hugr, &mut summary);
         pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
         assert!(hugr.validate().is_ok());
         // Both T gates get removed
+        // When merging Rzs, each removed Rz is replaced by an ADD, so node count doesn't change
         assert_eq!(hugr.num_nodes(), 64);
         let t_count = hugr
             .nodes()
@@ -2140,8 +2153,6 @@ mod test {
             })
             .count();
         assert_eq!(t_count, 0);
-        // At the moment, the Rz gates will not be merged. This is because of the eager combinations of the conditionals. The conditional does not know that the input is a Bell state, so the actions of the CX gates are distinct and therefore get entangled with control qubits. We then compose it onto the Bell state, at which point both branches generate the same stabilizer but there are still distinct copies of that stabilizer with Zs and Xs on the control qubits.
-        // Once we have implemented a project-and-recombine pass on dataflow tableaus, we could run that on the first conditional input to identify the GHZ state is invariant and therefore we can merge more gates here.
         let rz_count = hugr
             .nodes()
             .filter(|n| {
@@ -2151,6 +2162,7 @@ mod test {
                 *extop == TketOp::Rz.into_extension_op()
             })
             .count();
-        assert_eq!(rz_count, 3);
+        // When merging Rzs, we are always left with 1 from each bucket
+        assert_eq!(rz_count, 1);
     }
 }

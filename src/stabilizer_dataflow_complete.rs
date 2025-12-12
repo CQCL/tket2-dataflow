@@ -1356,6 +1356,109 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 Self::tensor_product(&acc, &new_wire)
             })
     }
+
+    pub fn recalculate_control(
+        &self,
+        control_node: H::Node,
+        control_port: Either<IncomingPort, OutgoingPort>,
+        control_row_index: &Vec<usize>,
+        control_sum_index: usize,
+    ) -> Self {
+        let mut positive_copy = self.tab.clone();
+        let mut positive_post_selects: Vec<(usize, PauliXZ, bool)> = vec![];
+        let mut negative_copy = self.tab.clone();
+        let mut negative_post_selects: Vec<(usize, PauliXZ, bool)> = vec![];
+
+        let phase_control_dfp = match control_port {
+            Either::Left(in_port) => DataflowPoint::SumInPhControl(
+                control_node,
+                in_port,
+                control_row_index.clone(),
+                control_sum_index,
+            ),
+            Either::Right(out_port) => DataflowPoint::SumOutPhControl(
+                control_node,
+                out_port,
+                control_row_index.clone(),
+                control_sum_index,
+            ),
+        };
+        let phase_control_index = self.q_index_map.get_by_left(&phase_control_dfp).unwrap();
+        positive_post_selects.push((*phase_control_index, PauliXZ::Z, false));
+        negative_post_selects.push((*phase_control_index, PauliXZ::Z, true));
+        let mut to_delete: Vec<usize> = vec![*phase_control_index];
+        let mut mult = 0;
+        loop {
+            let control_dfp = match control_port {
+                Either::Left(in_port) => DataflowPoint::SumInControl(
+                    control_node,
+                    in_port,
+                    control_row_index.clone(),
+                    control_sum_index,
+                    mult,
+                ),
+                Either::Right(out_port) => DataflowPoint::SumOutControl(
+                    control_node,
+                    out_port,
+                    control_row_index.clone(),
+                    control_sum_index,
+                    mult,
+                ),
+            };
+            match self.q_index_map.get_by_left(&control_dfp) {
+                Some(control_index) => {
+                    positive_post_selects.push((*control_index, PauliXZ::Z, false));
+                    negative_post_selects.push((*control_index, PauliXZ::X, false));
+                    to_delete.push(*control_index);
+                }
+                None => {
+                    break;
+                }
+            }
+            mult += 1;
+        }
+
+        positive_copy.post_select_1qs(&positive_post_selects);
+        negative_copy.post_select_1qs(&negative_post_selects);
+
+        // Remove post-selected qubits in order so to minimise issues from relabelling qubits
+        to_delete.sort();
+        let mut new_q_index_map = self.q_index_map.clone();
+        for to_delete in to_delete.iter().rev() {
+            new_q_index_map.remove_by_right(to_delete);
+            let positive_moved = positive_copy.delete_qubit(*to_delete);
+            let negative_moved = negative_copy.delete_qubit(*to_delete);
+            if let Some(moved_qb) = positive_moved {
+                let (moved_dfp, _) = new_q_index_map.remove_by_right(&moved_qb).unwrap();
+                new_q_index_map.insert(moved_dfp, *to_delete);
+            } else if let Some(moved_qb) = negative_moved {
+                let (moved_dfp, _) = new_q_index_map.remove_by_right(&moved_qb).unwrap();
+                new_q_index_map.insert(moved_dfp, *to_delete);
+            }
+        }
+
+        let control_spec = match control_port {
+            Either::Left(in_port) => {
+                ControlSpec::SumInControl(in_port, control_row_index.clone(), control_sum_index)
+            }
+            Either::Right(out_port) => {
+                ControlSpec::SumOutControl(out_port, control_row_index.clone(), control_sum_index)
+            }
+        };
+        StabilizerDataflow::controlled_conditional(
+            &StabilizerDataflow {
+                tab: positive_copy,
+                q_index_map: new_q_index_map.clone(),
+            },
+            &StabilizerDataflow {
+                tab: negative_copy,
+                q_index_map: new_q_index_map,
+            },
+            control_node,
+            &control_spec,
+            true,
+        )
+    }
 }
 
 /// Accumulates summaries of regions of a hugr
