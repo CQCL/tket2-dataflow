@@ -192,6 +192,7 @@ pub struct StabilizerDataflow<H: HugrView> {
     /// The full tableau represents a summary of a region of the program.
     pub tab: SymplecticTableau,
     /// A bimap relating wires of the program (and supplementary control qubits) to the qubit indices in tab.
+    /// For complexity analysis, we use the average complexity O(1) for lookups, insertions, and deletions.
     pub q_index_map: BiHashMap<DataflowPoint<H::Node>, usize>,
 }
 
@@ -205,6 +206,7 @@ impl<H: HugrView> Default for StabilizerDataflow<H> {
 }
 
 impl<H: HugrView> Clone for StabilizerDataflow<H> {
+    // O(Q * S)
     fn clone(&self) -> Self {
         StabilizerDataflow {
             tab: self.tab.clone(),
@@ -214,6 +216,9 @@ impl<H: HugrView> Clone for StabilizerDataflow<H> {
 }
 
 impl<H: HugrView> StabilizerDataflow<H> {
+    // O(self.S * other.Q + other.S * (self.Q + other.Q))
+    // Q' = self.Q + other.Q
+    // S' = self.S + other.S
     fn tensor_product_in_place(&mut self, other: &Self) {
         // Assumes self and other use disjoint qubits
         let offset = self.tab.add_qubits(other.tab.nb_qubits);
@@ -235,6 +240,9 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
     }
 
+    // O((left.Q + right.Q) * (left.S + right.S))
+    // Q' = left.Q + right.Q
+    // S' = left.S + right.S
     fn tensor_product(left: &Self, right: &Self) -> Self {
         // Assumes left and right use disjoint qubits
         let mut res = left.clone();
@@ -243,6 +251,15 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     // When building identity wires for output interfaces, we may wish to use SumOutControls instead of SumInControls, and combining flow and interface data uses the same logic as for conditionals.
+    // O(union_Q * (left.S + right.S)^2)
+    //      Unifying qubit indexing O(right.Q)
+    //      Cloning left O(left.Q * left.S)
+    //      Extending left to new indexing O(right.Q * left.S)
+    //      Reordering right to new indexing O(union_Q * right.S)
+    //      Joint decomposition O(union_Q * (left.S + right.S)^2)
+    //      Adding control qubits takes O(left.S + right.S) each; at most left.S + right.S controls, so O((left.S + right.S)^2) total
+    //  Q' = union_Q + n_ac_pairs + just_left + just_right <= union_Q + left.S + right.S
+    //  S' = left.S + right.S - join_ignoring_phases <= left.S + right.S
     fn controlled_conditional(
         left: &Self,
         right: &Self,
@@ -400,6 +417,11 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     // Unlike controlled_conditional, injections always use SumOutPhControls
+    // O(Q + S)
+    //      Adding new qubit is O(S)
+    //      Adding new stabilizer is O(Q)
+    // Q' = Q + 1
+    // S' = S + 1
     fn sum_injection(
         &mut self,
         inj_variant: Either<(), ()>,
@@ -425,6 +447,54 @@ impl<H: HugrView> StabilizerDataflow<H> {
         );
     }
 
+    // With nesting_depth and max_width, there are at most max_width^nesting_depth many possible values for the row_index of a DataflowPoint, which gives us at most 2*max_width^nesting_depth qubits (excluding controls); but the stabilizers from them might have different controls on each branch of a variant and thus necessitate adding extra controls at each point in the type's syntax tree
+    // Complexity analysis reveals the actual bounds are pretty big...
+    // Qubit base case
+    //      O(1) time
+    //      Q' = 2
+    //      S' = 2
+    // Bool base case
+    //      O(1) time
+    //      Q' = 1
+    //      S' = 0
+    // Sum case in terms of num_variants, max_width of variants, max_Q and max_S of recursive calls
+    //      Time complexity dominated by adding control qubits
+    //          Folding the tensor product within a single variant is O(max_width^3 * max_Q * max_S) time
+    //              Each tensor product takes time equal to its resulting size
+    //              Stacking rectangles for the tableaus after each fold gives a pyramid of base (max_width * max_Q) qubits by (max_width * max_S) stabilizers and height max_width; volume of a pyramid is 1/3 B h
+    //              This could obviously be improved by computing the tensor product of all tableaus directly, saving a factor of max_width in the time complexity
+    //          Adding control qubits is hard to analyse
+    //              Assuming no overlapping qubit names (and hence no joint stabilizers) between any variants, each controlled_conditional gives Q' = 2*Q + 2*S, S' = 2*S
+    //              Hence, in total,
+    //                  Q' = 2^{log2 num_variants}*(max_width * max_Q) + 2^{log2 num_variants}*(log2 num_variants)*(max_width * max_S) < 2*num_variants*max_width*(max_Q + log2(num_variants) * max_S)
+    //                  S' = 2^{log2 num_variants}*(max_width * max_S) < 2*num_variants * max_width * max_S
+    //                  Round 1: O(2^3 QS^2)
+    //                  Round 2: O(2^3 (2Q+2S)(2S)^2) = O(2^6 (QS^2 + S^3))
+    //                  Round 3: O(2^3 (4Q+4S+4S)(4S)^2) = O(2^9 (QS^2 + 2S^3))
+    //                  Round N: O(2^{3N} (QS^2 + (N-1)S^3))
+    //                  Cumulative to Round N: 1*RN + 2*R(N-1) + ... + 2^(N-1)*R1
+    //                                          = O(N2^{3N}QS^2 + N^2 2^{4N}S^3)
+    //                  Total time O(num_variants^3 * (log2 num_variants) * max_width^3 * max_S^2 * (max_Q + max_S * num_variants * (log2 num_variants)))
+    //              Obviously, this is a very conservative estimate and in practice we can get a lot of qubits overlapping and the sum types themselves are typically not very large
+    // Iterating this for nesting_depth times...
+    //          S' < (2*num_variants * max_width)^{nesting_depth} * max_S
+    //          Q' < (2*num_variants * max_width)^{nesting_depth} * (max_Q + nesting_depth * log2(num_variants)^{nesting_depth} * max_S)
+    //          Using N = log2 num_variants, W = max_width, Q = max_Q, S = max_S
+    //          Round 1: O(N2^{3N}W^3 QS^2 + N^2 2^{4N}W^3 S^3)
+    //          Round 2: O(N2^{3N}W^3 2^{N+1} W (Q + NS) (2^{N+1} W S)^2 + N^2 2^{4N}W^3 (2^{N+1} W S)^3)
+    //          Round 2: O(N2^{6N+3}W^6 (QS^2 + NS^3) + N^2 2^{7N+3}W^6 S^3)
+    //          Round 3: O(N2^{3N}W^3 2^{2N+2} W^2 (Q + 2NS) (2^{2N+2} W^2 S)^2 + N^2 2^{4N}W^3 (2^{2N+2} W^2 S)^3)
+    //          Round 3: O(N2^{9N+6}W^9 (QS^2 + 2NS^3) + N^2 2^{10N+6}W^9 S^3)
+    //          Round D: O(N2^{3DN+3D}W^{3D} QS^2 + DN^2 2^{3DN+3D}W^{3D} S^3 + N^2 2^{3DN + 3D + N}W^{3D} S^3)
+    //          Round D: O(2^{3DN+3D}W^{3D} (NQS^2 + (D + 2^N) N^2 S^3))
+    //          Cumulative to Round D: (W2^N)^{D-d} many calls to round d
+    //                  \sum_d (W2^N)^{D-d} 2^{3dN+3d}W^{3d} (NQS^2 + (d + 2^N) N^2 S^3)
+    //                  \sum_d 2^{DN + 2dN + 3d} W^{D + 2d} (NQS^2 + (d + 2^N) N^2 S^3)
+    //                  O(2^{3DN + 3D}W^{3D} (NQS^2 + (D + 2^N) N^2 S^3))
+    // Fixing initial Q and S as O(1) from base cases...
+    // O((2 * num_variants * max_width)^{3*nesting_depth} * (nesting_depth + num_variants) * (log2 num_variants)^2)
+    // With the same assumptions, the input syntax tree for the sum type itself can be O((num_variants * max_width)^{nesting_depth}), so the dimensions of the final tableau still grow reasonably wrt the actual input size, and the time complexity is a little over cubic in the size of the syntax tree
+    // For complexity analysis of anything using this method, we will assume that the qubit count, stabilizer count, and time cost of all calls to this method are bound by some (potentially large) variables IdQ, IdS, IdT respectively, which are indicators of how complex the Sum types are in the target program
     fn identity_wire_recursive(
         hugr: &H,
         source: H::Node,
@@ -552,6 +622,10 @@ impl<H: HugrView> StabilizerDataflow<H> {
         }
     }
 
+    // O(IdT * inp.out_ports + IdQ * IdS * inp.out_ports^3)
+    // Q' < IdQ * inp.out_ports
+    // S' < IdS * inp.out_ports
+    // Similar to identity_wire_recursive, we could reduce the factor of inp.out_ports by building the tensor product directly instead of with a fold
     fn initialise_from_input(hugr: &H, inp: H::Node, use_sums: bool) -> Self {
         hugr.out_value_types(inp)
             .fold(StabilizerDataflow::default(), |acc, (out, out_type)| {
@@ -573,6 +647,8 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     /// Projecting immediately to boundary information will lose flow information that relies on nodes with both flow and interface roles. This method post-selects all role controls to the flow information so we can then safely project to flow information over the boundaries with project_non_io
+    /// O(Q * S * min(n_roles, S))
+    /// Q' = Q
     fn project_to_flow(&mut self) {
         let post_selects: Vec<(usize, PauliXZ, bool)> = self
             .q_index_map
@@ -588,6 +664,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
         self.tab.post_select_1qs(&post_selects);
     }
 
+    // O(Q * S^2)
     fn project_non_io(&mut self, inp: H::Node, out: H::Node) {
         let non_ios: Vec<usize> = self
             .q_index_map
@@ -676,6 +753,14 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     /// Used when DataflowSettings::include_external_interface == true and DataflowSettings::flow_level == DataflowFlowDetail::None
+    /// O(InQ * Q * S + node.out_ports * IdQ * S + node.out_ports * Q * IdS + node.out_ports^2 * IdQ * IdS) time where InQ is the number of qubits currently in the tableau associated to predecessors of node
+    ///     Identifying qubits to be renamed/removed/copied is done in O(Q)
+    ///     Each qubit rename is O(1)
+    ///     Each qubit remove is O(Q * S)
+    ///     Each copied qubit costs O(Q + S) to add both the qubit and the new stabilizer
+    ///     Doing the tensor products in place takes O(S * node.out_ports * IdQ + node.out_ports * IdS * (Q + node.out_ports * IdQ))
+    /// Q' < Q + node.out_ports * IdQ
+    /// S' < S + InQ + node.out_ports * IdS
     fn apply_opaque(&mut self, hugr: &H, node: H::Node, use_sums: bool) {
         // Rename frontier qubits to the correct qubit labels
         // If use_sums == false, then we also get rid of any inputs that are held within sum types
@@ -698,18 +783,6 @@ impl<H: HugrView> StabilizerDataflow<H> {
         // Iterate through self.q_index_map in a deterministic order
         for qb in 0..self.tab.nb_qubits {
             let dfp = self.q_index_map.get_by_right(&qb).unwrap();
-            if let DataflowPoint::TempOut(source, out_port, row_index) = dfp {
-                if let Some(found) = pred_map.get(&(*source, *out_port)) {
-                    if let Some(in_port) = found {
-                        qbs_to_rename
-                            .push((qb, DataflowPoint::NodeIn(node, *in_port, row_index.clone())));
-                    } else {
-                        qbs_to_remove.push((dfp.clone(), qb));
-                    }
-                }
-            }
-            // No need to rename control qubits as they are all strictly associated with the previous node and may be used for studying of the classical information flow
-
             match dfp {
                 DataflowPoint::TempOut(source, out_port, row_index) => {
                     if let Some(found) = pred_map.get(&(*source, *out_port)) {
@@ -791,6 +864,12 @@ impl<H: HugrView> StabilizerDataflow<H> {
 
     /// Apply a quantum gate to the end of the summary.
     /// Used for nodes with TketOps when DataflowSettings::include_external_interface == false and DataflowSettings::flow_level != DataflowFlowDetail::None (so we assume flow_level passed in here is not None), i.e. we can apply some amount of flow information in-place
+    /// O(Q * S) time (unless we add more TketOps that are handled as opaque)
+    ///     Unitary Clifford gates are O(S)
+    ///     QFree/CRz/Toffoli require projection of 2/2/3 columns, so O(Q * S)
+    ///     Basic rotations and measurements require O(S) to add the new qubit(s) and extend existing stabilizers, then O(Q) to add the new one; if DataflowSettings::rotation_override==false, then O(Q * S) to project a column
+    ///     (Try)QAlloc requies O(S) to add the qubit(s) and O(Q) to add the stabilizer
+    ///     Reset combines an O(Q * S) projection and an O(Q) new stabilizer
     fn apply_quantum_gate_flow_only(
         &mut self,
         hugr: &H,
@@ -811,10 +890,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
             }
             TketOp::CY => {
                 self.apply_clifford_with(hugr, node, |tab, [col0, col1]| {
-                    tab.append_s(col1);
-                    tab.append_z(col1);
-                    tab.append_cx(col0, col1);
-                    tab.append_s(col1);
+                    tab.append_cy(col0, col1);
                 });
             }
             TketOp::CZ => {
@@ -1149,6 +1225,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     /// Used when DataflowSettings::include_external_interface == false and DataflowSettings::flow_level == DataflowFlowDetail::None, i.e. we want to treat this node as a completely decoherent channel that destroys all information incident on it
+    /// O(InQ * Q * S) time, where InQ is the number of existing qubits associated with predecessors of node
     fn apply_decoherent(&mut self, hugr: &H, node: H::Node) {
         let preds: HashSet<(H::Node, OutgoingPort)> =
             HashSet::from_iter(hugr.all_linked_outputs(node));
@@ -1187,6 +1264,11 @@ impl<H: HugrView> StabilizerDataflow<H> {
     /// Naively takes the tensor product of the two tableaus and performs a Bell post-selection to join TempOut/TempIn qubits, as well as adding ZZ stabilizers to propagate SumInPhControl/SumOutPhControl qubits.
     /// We assume flow has already been constructed according to the DataflowSettings for the node.
     /// In future, it may be worth avoiding the Bell post-selection by instead finding a set of gate applications that extend the existing stabilizers appropriately and then only adding the stabilizers independent of TempIns, since this could allow us to only use operations that are fast in qubit-major tableau implementations during summary construction.
+    /// O(InQ * (self.Q + summary.Q) * (self.S + summary.S)) time for InQ qubits used in the input interface of node
+    ///     Tensor product takes O(self.S * summary.Q + summary.S * (self.Q + summary.Q))
+    ///     O(self.Q + summary.Q) to identify the post-selections, discards, and propagations to perform
+    ///     For each qubit in the type signature of an input, it must be either post-selected or projected, so O(InQ * (self.Q + summary.Q) * (self.S + summary.S))
+    ///     Adding stabilizers to propagate controls is O(InQ * (self.Q + summary.Q))
     fn append_node_summary(&mut self, hugr: &H, node: H::Node, summary: &StabilizerDataflow<H>) {
         self.tensor_product_in_place(summary);
         let preds: HashMap<(H::Node, OutgoingPort), IncomingPort> = HashMap::from_iter(
@@ -1287,6 +1369,10 @@ impl<H: HugrView> StabilizerDataflow<H> {
     /// Calls apply_quantum_gate_flow_only to generate a standalone summary of the flow for a quantum gate.
     /// The resulting summary describes the flow between TempIns and TempOuts of the corresponding node.
     /// The settings configures usage of sum types and rotation overrides.
+    /// O(node.in_ports^3 * IdQ * IdS)
+    ///     Combining input wire descriptions gives node.in_ports * IdQ qubits and node.in_ports * IdS stabilizers
+    ///     Building this using a fold operation takes O(node.in_ports^3 * IdQ * IdS) time (again, we can cut this down by building in-place)
+    ///     Using the complexity of apply_quantum_gate_flow_only assuming a TketOp that is not handled as opaque, applying it takes O(node.in_ports^2 * IdQ * IdS) time
     fn generate_quantum_gate_flow(
         hugr: &H,
         node: H::Node,
@@ -1318,6 +1404,7 @@ impl<H: HugrView> StabilizerDataflow<H> {
     }
 
     /// Generates a standalone summary for the interface to a given node, i.e. a set of identity wires for any qubit inputs and outputs (optionally including any of those within sum types).
+    /// O((node.in_ports + node.out_ports)^3 * IdQ * IdS) time (could be reduced if we build the tensor product in-place)
     fn generate_interface(hugr: &H, node: H::Node, settings: DataflowSettings) -> Self {
         let in_interface = hugr.in_value_types(node).fold(
             StabilizerDataflow::default(),
@@ -1357,6 +1444,11 @@ impl<H: HugrView> StabilizerDataflow<H> {
             })
     }
 
+    // O(Q*S*mult + Q*S^2 + mult * log(mult)) time
+    //      Post-selecting the controls takes O(Q*S*mult)
+    //      Ordering the controls for deletion takes O(mult * log(mult))
+    //      Deletion of qubits takes O(S*mult)
+    //      When recombining, they have the same qubits, so O(Q*S^2)
     pub fn recalculate_control(
         &self,
         control_node: H::Node,
@@ -1500,6 +1592,65 @@ impl<H: HugrView> SDFAnalysis<H> {
         res.summaries
     }
 
+    // Time complexity breakdown:
+    //      Per node:
+    //          If DataflowSettings::flow_level == DataflowFlowDetail::None, O(InQ * Q * S + node.out_ports * IdQ * S + node.out_ports * Q * IdS + node.out_ports^2 * IdQ * IdS)
+    //          For TketOps or unknown ops, O(Q*S) in place or the breakdown below with interface
+    //              O((node.in_ports + node.out_ports)^3 * IdQ * IdS) to generate the interface
+    //              O(node.in_ports^3 * IdQ * IdS) to generate flow (trivial if unknown op)
+    //              O((node.in_ports + node.out_ports)^3 * IdQ * IdS^2) to combine
+    //                  union_Q = O((node.in_ports + node.out_ports) * IdQ)
+    //                  left.S = O((node.in_ports + node.out_ports) * IdS)
+    //                  right.S = O(node.in_ports * IdS)
+    //              O(InQ * (Q + (node.in_ports + node.out_ports) * IdQ + (node.in_ports + node.out_ports) * IdS) * (S + (node.in_ports + node.out_ports) * IdS)) to apply the summary
+    //          For LogicOps/BoolOps, O(Q + S) to add new qubits and stabilizers
+    //          For conditionals
+    //              Recursive calls to compute the branch summaries
+    //              O(num_variants*branch.Q*branch.S^2) to project summaries if needed
+    //              O(num_variants*branch.Q) to update row_index vectors of qubits
+    //              O(num_variants*branch.Q*branch.S) to reorder qubits
+    //              O(num_variants*branch.Q*branch.S^2) to compute invariants when DataflowSettings::flow_level == DataflowFlowDetail::Invariants
+    //              When DataflowSettings::flow_level == DataflowFlowDetail::ConditionalInvs, branches have the same qubits but possibly completely different stabilizers
+    //                  S' < num_variants * branch.S
+    //                  Q' < branch.Q + 3 * num_variants * branch.S
+    //                      The origin of the 3 is weird
+    //                      When num_variants = 2^k, need up to (2^{k+1}-2)*branch.S control qubits
+    //                      When num_variants = 2^k +1, need up to (2^{k+1}-2)*branch.S to merge into groups of 2^k, then the final merge has (2^k +1)*branch.S stabs to uniquely identify
+    //                      (2^{k+1}-2)+(2^k +1) = 3*2^k - 1 < 3*(2^k +1)
+    //                      Every new variant until the next power of 2 just adds up to branch.S new control qubits
+    //                  Total time O(num_variants^3 * (log2 num_variants) * branch.Q * branch.S^2 + num_variants^4 * (log2 num_variants)^2 * branch.S^3)
+    //                      Round 1: O(branch.Q * (2*branch.S)^2)
+    //                      Round 2: O((branch.Q + 2*branch.S) * (4*branch.S)^2)
+    //                      Round 3: O((branch.Q + 6*branch.S) * (8*branch.S)^2)
+    //                      Round 4: O((branch.Q + 14*branch.S) * (16*branch.S)^2)
+    //                      Round N: O(2^{2N} * branch.Q * branch.S^2 + 2^{3N} * branch.S^3)
+    //                      Cumulative to Round N: O(N * 2^{3N} * branch.Q * branch.S^2 + N^2 * 2^{4N} * branch.S^3)
+    //              When DataflowSettings::flow_level == DataflowFlowDetail::All, we assume the majority of qubits in each branch are completely disjoint, and hence so are the stabilizers
+    //                  S' < num_variants * max_S
+    //                  Q' < num_variants * max_Q + 3 * num_variants * max_S
+    //                  Total time O(num_variants^3 * (log2 num_variants) * max_Q * max_S^2 + num_variants^4 * (log2 num_variants)^2 * max_S^3)
+    //              O(InQ * (Q + num_variants * max_Q + 3 * num_variants * max_S) * (S + num_variants * max_S)) time to apply the summary
+    //          For loops
+    //              Recursive call to compute the body summary
+    //              O(body.Q * body.S^2) to project to the continue/break branch, and project to flow over io
+    //              O(InQ^3) to join the projected tableau (2*InQ qubits, up to same number of stabilizers) and the identity (same size)
+    //              O(InQ * (body.Q + body.S + InQ)) to tensor product
+    //              O(InQ * (body.Q + InQ) * (body.S + InQ)) to compose via Bell post-selection; same for eliminating the adjoining qubits
+    //              Worst case includes adding role controls for both interface and body summary
+    //                  O((node.in_ports + node.out_ports)^3 * IdQ * IdS) to generate interface tableau
+    //                  O((body.Q + (node.in_ports + node.out_ports) * IdQ) * (body.S + (node.in_ports + node.out_ports) * IdS)) to tensor product
+    //                  O((body.Q + (node.in_ports + node.out_ports) * IdQ) * (body.S + (node.in_ports + node.out_ports) * IdS)^2) to take conditional
+    //              O(InQ * (Q + body.Q + body.S + (node.in_ports + node.out_ports) * (IdQ + IdS)) * (S + body.S + (node.in_ports + node.out_ports) * IdS)) to apply overall loop summary to the context summary
+    //          For function calls
+    //              Recursive call to compute the summary
+    //              O(fun.Q*fun.S^2) to project the function summary to flow over IO
+    //              Same cost as TketOps to apply a summary
+    //          For tags O(InQ*Q + S)
+    //              O(Q+S) to add the injections
+    //              O(Q) to update all of the row_index vectors of qubits
+    //              O(InQ*Q) to propagate classical values
+    //
+    // The worst node kinds for time complexity are conditional nodes; where size of the hugr will be roughly O(num_variants * max_Q), building the summary is close to quartic in this size
     fn run_dfg(
         &mut self,
         hugr: &H,
@@ -2542,7 +2693,7 @@ impl<H: HugrView> SDFAnalysis<H> {
                             );
                             let (join_begin, _) = jd.join_range();
                             for i in (0..join_begin).rev() {
-                                jd.tab.delete_qubit(i);
+                                jd.tab.delete_stab(i);
                             }
                             StabilizerDataflow {
                                 tab: jd.tab,

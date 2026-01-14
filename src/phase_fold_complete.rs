@@ -94,6 +94,23 @@ impl<H: HugrMut> PhaseFold<H> {
         }
     }
 
+    // Time complexity analysis
+    //      O(QS^2) to put summary into echelon form
+    //      O(Q * log S) to identify and store leaders
+    //      O(Q^2) to find ancestors of all nodes (done lazily in the middle of following loops)
+    //      For each of up to S stabilizers with a single rotation
+    //          O(Q) to check non-permissibles
+    //          O(QS) to copy other stabilizers to solver
+    //          O(QS^2) to run echelon on solver
+    //          O(Q) to check solver results
+    //          O(inverse_ackermann(Q)) to merge buckets
+    //      For each of up to S stabilizers with two rotations
+    //          O(Q) to check non-permissibles and verify exactly two rotations
+    //          Otherwise, same operations as the previous loop
+    //      For each of up to O(S^2) pairs of stabilizers
+    //          O(Q) to compute product, check non-permissibles, and verify exactly two rotations
+    //          Otherwise, same operations as the previous loops
+    // Overall, O(Q^2 + QS^4) time
     pub fn find_folds(&mut self, hugr: &H, summary: &mut StabilizerDataflow<H>) {
         let mut rotations: Vec<usize> = vec![];
         let mut other_non_permissibles: Vec<usize> = vec![];
@@ -180,7 +197,6 @@ impl<H: HugrMut> PhaseFold<H> {
             non_permissible_mask.xor_bit(q);
         }
 
-        let mut ancestors: HashMap<H::Node, HashSet<H::Node>> = HashMap::new();
         let mut unused_stabs: Vec<usize> = vec![];
         for q in rotations.iter() {
             let DataflowPoint::Rotation(r_node) = summary.q_index_map.get_by_right(q).unwrap()
@@ -193,7 +209,6 @@ impl<H: HugrMut> PhaseFold<H> {
                 anc_set.insert(anc_parent);
                 anc = anc_parent;
             }
-            ancestors.insert(*r_node, anc_set.clone());
             if let Some(stab) = leader_to_stab.get(&(*q, PauliXZ::Z)) {
                 // Check that no other non-permissibles are in the stabilizer
                 let mut z_with_mask = summary.tab.z[*stab].clone();
@@ -463,6 +478,11 @@ impl<H: HugrMut> PhaseFold<H> {
         }
     }
 
+    // Time complexity analysis
+    //      O(Q*inverse_ackermann(Q)) to split buckets into rotations and measurements
+    //      All hugr rewrites are disjoint and replace subgraphs with subgraphs of comparable or smaller size
+    //      Lazily computing topological sorts of each sibling graph of the hugr, O(V+E) for each sibling graph
+    // Overall, should be approximately linear in the size of the hugr
     pub fn apply_folds(&self, hugr: &mut H, pfsettings: &PhaseFoldSettings) {
         // Split each bucket into rotations and measurements
         // IndexSet maintains the insertion order so we can iterate through and make changes to the hugr in a deterministic order (it breaks if you remove individual elements from the set, but in this routine the only removals occur when clearing the entire set)

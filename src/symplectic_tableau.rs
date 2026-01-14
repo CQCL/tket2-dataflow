@@ -7,9 +7,11 @@ use std::{cmp::min, fmt::Display};
 #[derive(Debug, Clone)]
 pub struct SymplecticTableau {
     // Total number of qubits in the system; each may represent an input, output, or intermediary point in the original circuit, but are uniformly considered outputs of the Choi-state considered here
+    // Referred to as Q in complexity comments
     pub nb_qubits: usize,
 
     // Number of stabilizers in the tableau; we do not impose any requirements on how this compares to nb_qubits
+    // Referred to as S in complexity comments
     pub nb_stabs: usize,
 
     // Binary tables; since we expect to perform a lot of row multiplications, we use a StringMajor ordering - first index for string, then index into the BitVector for qubits
@@ -93,6 +95,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(Q)
     pub fn add_stab(&mut self, z: BitVector, x: BitVector, sign: bool) -> usize {
         let stab_id = self.nb_stabs;
         self.z.push(z);
@@ -102,6 +105,7 @@ impl SymplecticTableau {
         stab_id
     }
 
+    // O(Q)
     pub fn add_string(&mut self, pauli: &str, sign: bool) -> Result<usize, String> {
         assert!(pauli.len() <= self.nb_qubits);
         let mut z = BitVector::new(self.nb_qubits);
@@ -127,6 +131,7 @@ impl SymplecticTableau {
         return Ok(self.add_stab(z, x, sign));
     }
 
+    // O(Q)
     pub fn stab_as_string(&self, stab: usize) -> String {
         let mut s = String::from("");
         if self.signs.get(stab) {
@@ -153,6 +158,7 @@ impl SymplecticTableau {
         s
     }
 
+    // O(S * nb_new_qbs)
     pub fn add_qubits(&mut self, nb_new_qbs: usize) -> usize {
         let qb_base = self.nb_qubits;
         self.nb_qubits += nb_new_qbs;
@@ -165,15 +171,18 @@ impl SymplecticTableau {
         qb_base
     }
 
+    // O(S)
     pub fn add_qubit(&mut self) -> usize {
         self.add_qubits(1)
     }
 
+    // O(S * N)
     pub fn add_n_qubits<const N: usize>(&mut self) -> [usize; N] {
         let col = self.add_qubits(N);
         (col..col + N).collect_array().unwrap()
     }
 
+    // O(S)
     pub fn append_z(&mut self, qubit: usize) {
         for (i, xv) in self.x.iter().enumerate() {
             if xv.get(qubit) {
@@ -182,6 +191,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_x(&mut self, qubit: usize) {
         for (i, zv) in self.z.iter().enumerate() {
             if zv.get(qubit) {
@@ -190,6 +200,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_s(&mut self, qubit: usize) {
         for (i, xv) in self.x.iter().enumerate() {
             if xv.get(qubit) {
@@ -202,6 +213,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_v(&mut self, qubit: usize) {
         for (i, zv) in self.z.iter().enumerate() {
             if zv.get(qubit) {
@@ -214,6 +226,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_h(&mut self, qubit: usize) {
         for (i, (zv, xv)) in zip(self.z.iter_mut(), self.x.iter_mut()).enumerate() {
             let z = zv.get(qubit);
@@ -230,6 +243,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_cx(&mut self, ctrl: usize, trgt: usize) {
         for (i, (zv, xv)) in zip(self.z.iter_mut(), self.x.iter_mut()).enumerate() {
             let zc = zv.get(ctrl);
@@ -251,6 +265,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_cy(&mut self, ctrl: usize, trgt: usize) {
         for (i, (zv, xv)) in zip(self.z.iter_mut(), self.x.iter_mut()).enumerate() {
             let zc = zv.get(ctrl);
@@ -273,6 +288,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_cz(&mut self, ctrl: usize, trgt: usize) {
         for (i, (zv, xv)) in zip(self.z.iter_mut(), self.x.iter_mut()).enumerate() {
             let zc = zv.get(ctrl);
@@ -294,6 +310,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(S)
     pub fn append_swap(&mut self, q0: usize, q1: usize) {
         for (zv, xv) in zip(self.z.iter_mut(), self.x.iter_mut()) {
             // To swap, just negate both bits if they differ
@@ -309,6 +326,7 @@ impl SymplecticTableau {
     }
 
     // Compute i^coeff stabs[sr] * stabs[sw] and store in stabs[sw]
+    // O(Q)
     pub fn stab_mult(&mut self, sr: usize, sw: usize, coeff: usize) {
         let zr = self.z.get(sr).unwrap().clone();
         let xr = self.x.get(sr).unwrap().clone();
@@ -344,6 +362,7 @@ impl SymplecticTableau {
     // Removes a stabilizer from the tableau
     // If the stabilizer to be removed was the last one, returns None
     // Otherwise, in order to keep things dense, swap with the last stabilizer before removing; returns the index of the last stabilizer, i.e. the old index that is now at to_delete
+    // O(Q)
     pub fn delete_stab(&mut self, to_delete: usize) -> Option<usize> {
         self.nb_stabs -= 1;
         if to_delete == self.nb_stabs {
@@ -372,6 +391,7 @@ impl SymplecticTableau {
     // Removes a qubit from the tableau
     // If the qubit to be removed was the last one, returns None
     // Otherwise, in order to keep things dense, swap with the last qubit before removing; returns the index of the last qubit, i.e. the old index that is now at to_delete
+    // O(S)
     pub fn delete_qubit(&mut self, to_delete: usize) -> Option<usize> {
         self.nb_qubits -= 1;
         if to_delete == self.nb_qubits {
@@ -410,6 +430,9 @@ impl SymplecticTableau {
     // col_order need not include every column, in which case we terminate after solving just the columns provided
     // Feel free to suggest a better interface here
     // We may also want a version that allows us to simultaneously perform this over a pair of tableaux
+    // O(Q * S * min(col_order.len(), S)), bounded by O(Q * S^2)
+    //      Identifying pivots takes S * col_order.len() lookups total (bounded by O(Q * S))
+    //      For each of the O(min(col_order.len(), S)) pivots, may need O(S) stabilizer multiplications, each is O(Q)
     pub fn echelon(&mut self, col_order: &Vec<(usize, PauliXZ)>) {
         let mut pivot_stab = 0;
         for (qubit, p) in col_order {
@@ -466,6 +489,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(Q)
     pub fn all_columns(&self) -> Vec<(usize, PauliXZ)> {
         interleave(
             (0..self.nb_qubits).map(|c| (c, PauliXZ::X)),
@@ -475,6 +499,9 @@ impl SymplecticTableau {
     }
 
     // Call echelon to minimise the number of rows with non-zero components in the given columns, then remove those rows with such non-zero components
+    // O(Q * S * min(cols.len(), S))
+    //      O(Q * S * min(cols.len(), S)) to reduce to echelon form
+    //      For each of min(cols.len(), S) pivots, deleting the stabilizer takes O(Q)
     pub fn project_cols_to_zero(&mut self, cols: &Vec<(usize, PauliXZ)>) {
         self.echelon(cols);
         let mut num_to_remove = 0;
@@ -502,6 +529,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(Q)
     pub fn anticommutes_with(&mut self, stab: usize, z: &BitVector, x: &BitVector) -> bool {
         let mut sz_and_x = self.z.get(stab).unwrap().clone();
         sz_and_x.and(x);
@@ -512,6 +540,9 @@ impl SymplecticTableau {
     }
 
     // Apply row combinations to leave at most one row anticommuting with the target Pauli string, and remove it
+    // O(Q * S)
+    //      Worst case, all stabilizers anti-commute with the target, so need S-1 stabilizer multiplications (O(Q) time each)
+    //      Removing the final stabilizer is O(Q)
     pub fn project_commuting_with(&mut self, z: &BitVector, x: &BitVector) {
         let mut anticommuting_stab: Option<usize> = None;
         for i in 0..self.nb_stabs {
@@ -533,6 +564,11 @@ impl SymplecticTableau {
 
     // Given a set of Pauli strings of weight 1 (i.e. +-Z or +-X on a single qubit), post-select on them
     // Does not include the post-selected strings in the resulting tableau
+    // If some combination of the post-selections already exists as a stabilizer, this will leave identity stabilizers in the tableau
+    // O(Q * S * min(cols.len(), S))
+    //      O(Q * S * min(cols.len(), S)) to project columns to zero
+    //      O(cols.len()) to set up masks
+    //      O(Q * S) to determine sign flips
     pub fn post_select_1qs(&mut self, cols: &Vec<(usize, PauliXZ, bool)>) {
         let cols_to_remove = cols
             .iter()
@@ -546,6 +582,7 @@ impl SymplecticTableau {
         let mut x_flip_mask = BitVector::new(self.nb_qubits);
         let mut z_clear_mask = BitVector::new(self.nb_qubits);
         let mut x_clear_mask = BitVector::new(self.nb_qubits);
+        // This call to negate may set bits beyond self.nb_qubits, but these are only ever ANDed on to our Pauli strings so the tableau will remain clear in the entries beyond self.nb_qubits
         z_clear_mask.negate();
         x_clear_mask.negate();
         for (q, xz, ph) in cols {
@@ -577,6 +614,16 @@ impl SymplecticTableau {
         }
     }
 
+    // O(Q * (l.S + r.S)^2)
+    //      Solving for the O(min(l.S, r.S)) anti-commuting pairs takes O(Q * min(l.S, r.S) * (l.S + r.S))
+    //          O(Q * l.S * r.S) time spent finding anti-commuting pivots
+    //          O(Q * min(l.S, r.S)) time swapping pivots into position and copying into the result container
+    //          O(Q * min(l.S, r.S) * (l.S + r.S)) time reducing wrt pivots
+    //      Full echelon of lr_tab takes O(Q * (l.S + r.S)^2)
+    //      O(Q * (l.S + r.S)) to reduce to at most one common stab with a phase difference
+    //      Subspace-preserving echelon reduction of l0_tab and r0_tab are both O(Q * (l.S + r.S)^2)
+    // Q' = Q
+    // S' <= l.S + r.S
     pub fn joint_decomposition(l: &SymplecticTableau, r: &SymplecticTableau) -> JointDecomposition {
         let mut left = l.clone();
         let mut right = r.clone();
@@ -998,6 +1045,7 @@ impl SymplecticTableau {
         }
     }
 
+    // O(Q * (left.S + right.S)^2)
     pub fn join(left: &SymplecticTableau, right: &SymplecticTableau) -> SymplecticTableau {
         let jd = SymplecticTableau::joint_decomposition(left, right);
         let mut res = SymplecticTableau::new(jd.tab.nb_qubits);
@@ -1012,6 +1060,9 @@ impl SymplecticTableau {
         res
     }
 
+    // O(Q * (left.S + right.S)^2)
+    // Q' = Q + n_ac_pairs + just_left + just_right <= Q + left.S + right.S
+    // S' = left.S + right.S - join_ignoring_phases <= left.S + right.S
     pub fn controlled_meet(left: &SymplecticTableau, right: &SymplecticTableau) -> ControlledMeet {
         let jd = SymplecticTableau::joint_decomposition(left, right);
         let mut cm = ControlledMeet {
