@@ -1140,27 +1140,20 @@ impl<H: HugrMut> PhaseFold<H> {
 
 #[cfg(test)]
 mod test {
+    use bimap::BiHashMap;
     use hugr::{
-        builder::{
-            endo_sig, Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder, HugrBuilder,
-            SubContainer,
-        },
-        extension::prelude::{bool_t, qb_t, usize_t},
-        ops::{handle::NodeHandle, Tag},
-        type_row,
-        types::{Signature, Type},
-        Hugr, HugrView, IncomingPort,
+        Hugr, HugrView, IncomingPort, Node, OutgoingPort, builder::{
+            Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder, HugrBuilder, SubContainer, endo_sig
+        }, extension::prelude::{bool_t, qb_t, usize_t}, ops::{OpType, Tag, handle::NodeHandle}, type_row, types::{Signature, Type}
     };
-    use itertools::Either;
+    use itertools::{Either, Itertools};
     use rstest::fixture;
     use tket::{
-        extension::{bool::BoolOp, rotation::rotation_type},
-        TketOp,
+        TketOp, extension::{bool::{BoolOp, bool_type}, rotation::rotation_type}
     };
 
     use crate::{
-        phase_fold_complete::{PhaseFold, PhaseFoldSettings},
-        stabilizer_dataflow_complete::{DataflowFlowDetail, DataflowSettings, SDFAnalysis},
+        bit_vector::BitVector, phase_fold_complete::{PhaseFold, PhaseFoldSettings}, stabilizer_dataflow_complete::{DataflowFlowDetail, DataflowPoint, DataflowSettings, SDFAnalysis}, symplectic_tableau::{PauliXZ, SymplecticTableau}
     };
 
     fn default_settings(_: hugr::Node) -> DataflowSettings {
@@ -1715,7 +1708,7 @@ mod test {
                     include_external_interface: true,
                     include_sum_types: true,
                     include_loop_body: false,
-                    rotation_override: false,
+                    rotation_override: true,
                 }
             } else {
                 default_settings(n)
@@ -1724,6 +1717,12 @@ mod test {
         let summary_map =
             SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
         let mut summary = summary_map.get(&func_node).unwrap().clone();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
         assert_eq!(hugr.num_nodes(), 32);
         let mut pf = PhaseFold::new();
         pf.find_folds(&hugr, &mut summary);
@@ -1894,6 +1893,12 @@ mod test {
         let summary_map =
             SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
         let mut summary = summary_map.get(&func_node).unwrap().clone();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
         assert_eq!(hugr.num_nodes(), 65);
         let mut pf = PhaseFold::new();
         pf.find_folds(&hugr, &mut summary);
@@ -2156,6 +2161,8 @@ mod test {
             0,
         );
         assert_eq!(hugr.num_nodes(), 66);
+        println!("{}", hugr.mermaid_string());
+        // assert!(false);
         let mut pf = PhaseFold::new();
         pf.find_folds(&hugr, &mut summary);
         pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
@@ -2184,5 +2191,190 @@ mod test {
             .count();
         // When merging Rzs, we are always left with 1 from each bucket
         assert_eq!(rz_count, 1);
+    }
+
+    #[test]
+    fn test_print_phase_fold_merges() {
+        let mut builder = FunctionBuilder::new("pf_merges", Signature::new(vec![qb_t()], vec![qb_t(), qb_t(), bool_type()])).unwrap();
+        let [qb0] = builder.input_wires_arr();
+        // Manually reset qubit by measurement and correction
+        let [qb0, b] = builder.add_dataflow_op(TketOp::Measure, [qb0]).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb0)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [qb0] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([qb0]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [qb0] = cond1_builder.input_wires_arr();
+        let [qb0] = cond1_builder.add_dataflow_op(TketOp::X, [qb0]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([qb0]).ok();
+        let [qb0] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        // A constant rotation to be removed during phase folding
+        let [qb0] = builder.add_dataflow_op(TketOp::Tdg, [qb0]).unwrap().outputs_arr();
+        // Combine this with fresh qubits to build a GHZ state
+        let [qb1] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [qb2] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [qb0] = builder.add_dataflow_op(TketOp::H, [qb0]).unwrap().outputs_arr();
+        let [qb0, qb1] = builder.add_dataflow_op(TketOp::CX, [qb0, qb1]).unwrap().outputs_arr();
+        let [qb1, qb2] = builder.add_dataflow_op(TketOp::CX, [qb1, qb2]).unwrap().outputs_arr();
+        // Gates that can be merged
+        let [qb0] = builder.add_dataflow_op(TketOp::T, [qb0]).unwrap().outputs_arr();
+        let [qb1] = builder.add_dataflow_op(TketOp::T, [qb1]).unwrap().outputs_arr();
+        let [b] = builder.add_dataflow_op(TketOp::MeasureFree, [qb2]).unwrap().outputs_arr();
+        let mut hugr = builder.finish_hugr_with_outputs([qb0, qb1, b]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        assert_eq!(hugr.num_nodes(), 22);
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert!(hugr.validate().is_ok());
+        // Tdg is removed due to constant rule
+        // T gates are removed due to merge_rm rule
+        // Number of nodes drops by 3 in total
+        assert_eq!(hugr.num_nodes(), 19);
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_print_qfree_example() {
+        let mut builder = FunctionBuilder::new("pf_null", Signature::new(vec![qb_t(), qb_t(), qb_t(), bool_t()], vec![qb_t(), qb_t()])).unwrap();
+        let [qb0, qb1, qb2, b] = builder.input_wires_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb0)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [qb0] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([qb0]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [qb0] = cond1_builder.input_wires_arr();
+        let t = cond1_builder.add_dataflow_op(TketOp::T, [qb0]).unwrap();
+        cond1_builder.finish_with_outputs([t.out_wire(0)]).ok();
+        let conda = cond_builder.finish_sub_container().unwrap();
+        let cxa = builder.add_dataflow_op(TketOp::CX, [qb1, conda.out_wire(0)]).unwrap();
+        let cxb = builder.add_dataflow_op(TketOp::CX, [cxa.out_wire(1), qb2]).unwrap();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), cxb.out_wire(0))], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [qb0] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([qb0]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [qb0] = cond1_builder.input_wires_arr();
+        let reset = cond1_builder.add_dataflow_op(TketOp::Reset, [qb0]).unwrap();
+        cond1_builder.finish_with_outputs([reset.out_wire(0)]).ok();
+        let condb = cond_builder.finish_sub_container().unwrap();
+        let qfree = builder.add_dataflow_op(TketOp::QFree, [cxa.out_wire(0)]).unwrap();
+        let mut hugr = builder.finish_hugr_with_outputs([condb.out_wire(0), cxb.out_wire(1)]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let body_in = hugr
+            .children(func_node)
+            .filter(|n| matches!(hugr.get_optype(*n), OpType::Input(_)))
+            .exactly_one()
+            .ok()
+            .unwrap();
+        let body_out = hugr
+            .children(func_node)
+            .filter(|n| matches!(hugr.get_optype(*n), OpType::Output(_)))
+            .exactly_one()
+            .ok()
+            .unwrap();
+        let mut custom_settings = |n: hugr::Node| {
+            if n == qfree.node() || n == reset.node() {
+                DataflowSettings {
+                    flow_level: DataflowFlowDetail::All,
+                    include_external_interface: true,
+                    include_sum_types: true,
+                    include_loop_body: true,
+                    rotation_override: true,
+                }
+            }
+            else {
+                default_settings(n)
+            }
+        };
+        let summary_map =
+            SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        let mut ideal_q_index_map: BiHashMap<DataflowPoint<Node>, usize> = BiHashMap::new();
+        ideal_q_index_map.insert(DataflowPoint::NodeOut(body_in, OutgoingPort::from(0), vec![]), 0);
+        ideal_q_index_map.insert(DataflowPoint::NodeOut(body_in, OutgoingPort::from(1), vec![]), 1);
+        ideal_q_index_map.insert(DataflowPoint::NodeOut(body_in, OutgoingPort::from(2), vec![]), 2);
+        ideal_q_index_map.insert(DataflowPoint::SumOutPhControl(body_in, OutgoingPort::from(3), vec![], 0), 3);
+        ideal_q_index_map.insert(DataflowPoint::NodeIn(body_out, IncomingPort::from(0), vec![]), 4);
+        ideal_q_index_map.insert(DataflowPoint::NodeIn(body_out, IncomingPort::from(1), vec![]), 5);
+        ideal_q_index_map.insert(DataflowPoint::SumInPhControl(conda.node(), IncomingPort::from(0), vec![], 0), 6);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(conda.node(), IncomingPort::from(0), vec![], 0, 0), 7);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(conda.node(), IncomingPort::from(0), vec![], 0, 1), 8);
+        ideal_q_index_map.insert(DataflowPoint::Rotation(t.node()), 9);
+        ideal_q_index_map.insert(DataflowPoint::SumInPhControl(condb.node(), IncomingPort::from(0), vec![], 0), 10);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(condb.node(), IncomingPort::from(0), vec![], 0, 0), 11);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(condb.node(), IncomingPort::from(0), vec![], 0, 1), 12);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(condb.node(), IncomingPort::from(0), vec![], 0, 2), 13);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(condb.node(), IncomingPort::from(0), vec![], 0, 3), 14);
+        ideal_q_index_map.insert(DataflowPoint::SumInControl(condb.node(), IncomingPort::from(0), vec![], 0, 4), 15);
+        ideal_q_index_map.insert(DataflowPoint::NodeIn(reset.node(), IncomingPort::from(0), vec![]), 16);
+        ideal_q_index_map.insert(DataflowPoint::NodeOut(reset.node(), OutgoingPort::from(0), vec![]), 17);
+        ideal_q_index_map.insert(DataflowPoint::RoleControl(reset.node(), 0), 18);
+        ideal_q_index_map.insert(DataflowPoint::RoleControl(reset.node(), 1), 19);
+        ideal_q_index_map.insert(DataflowPoint::RoleControl(reset.node(), 2), 20);
+        ideal_q_index_map.insert(DataflowPoint::RoleControl(reset.node(), 3), 21);
+        ideal_q_index_map.insert(DataflowPoint::NodeIn(qfree.node(), IncomingPort::from(0), vec![]), 22);
+        ideal_q_index_map.insert(DataflowPoint::RoleControl(qfree.node(), 0), 23);
+        ideal_q_index_map.insert(DataflowPoint::RoleControl(qfree.node(), 1), 24);
+        let mut reordered_summary = SymplecticTableau::new(summary.tab.nb_qubits);
+        for i in 0..summary.tab.nb_stabs {
+            let mut new_z = BitVector::new(summary.tab.nb_qubits);
+            let mut new_x = BitVector::new(summary.tab.nb_qubits);
+            for z_index in summary.tab.z[i].get_all_ones(summary.tab.nb_qubits) {
+                let new_index = ideal_q_index_map
+                    .get_by_left(summary.q_index_map.get_by_right(&z_index).unwrap())
+                    .unwrap();
+                new_z.xor_bit(*new_index);
+            }
+            for x_index in summary.tab.x[i].get_all_ones(summary.tab.nb_qubits) {
+                let new_index = ideal_q_index_map
+                    .get_by_left(summary.q_index_map.get_by_right(&x_index).unwrap())
+                    .unwrap();
+                new_x.xor_bit(*new_index);
+            }
+            reordered_summary
+                .add_stab(new_z, new_x, summary.tab.signs.get(i));
+        }
+        println!("{}", hugr.mermaid_string());
+        // summary = summary.recalculate_control(
+        //     condb.node(),
+        //     Either::Left(IncomingPort::from(0)),
+        //     &vec![],
+        //     0,
+        // );
+        // // Prioritise solving controls, then intermediates, then boundaries
+        // let col_order = vec![7, 8, 11, 12, 13, 14, 15, 18, 19, 20, 21, 23, 24, 22, 16, 17, 10, 9, 6, 0, 1, 2, 3, 4, 5];
+        // Prioritise solving boundaries, then intermediates, then controls
+        let col_order = vec![0, 1, 2, 3, 4, 5, 6, 9, 10, 16, 17, 22, 7, 8, 11, 12, 13, 14, 15, 18, 19, 20, 21, 23, 24];
+        let col_pauli_order = col_order.iter().map(|i| (*i, PauliXZ::X)).interleave(col_order.iter().map(|i| (*i, PauliXZ::Z))).collect_vec();
+        reordered_summary.echelon(&col_pauli_order);
+        println!("{}", reordered_summary);
+        // // Prioritise things goal string shouldn't contain, then optional stuff to help clear junk
+        // let col_order = vec![0, 2, 4, 6, 12, 5, 10, 19, 16, 9, 15, 24];
+        // let col_pauli_order = col_order.iter().map(|i| (*i, PauliXZ::X)).interleave(col_order.iter().map(|i| (*i, PauliXZ::Z))).collect_vec();
+        // summary.tab.echelon(&col_pauli_order);
+        // println!("{}", summary.tab);
+        // for i in 0..summary.tab.nb_qubits {
+        //     println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        // }
+        println!("{}", hugr.num_nodes());
+        // assert_eq!(hugr.num_nodes(), 22);
+        let mut pf = PhaseFold::new();
+        pf.find_folds(&hugr, &mut summary);
+        pf.apply_folds(&mut hugr, &MAX_PFSETTINGS);
+        assert!(hugr.validate().is_ok());
+        // T is removed due to null rule
+        // Number of nodes drops by 1 in total
+        println!("{}", hugr.num_nodes());
+        // assert_eq!(hugr.num_nodes(), 19);
+        // assert!(false);
     }
 }

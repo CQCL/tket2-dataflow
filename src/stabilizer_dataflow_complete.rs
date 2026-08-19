@@ -650,26 +650,18 @@ impl<H: HugrView> StabilizerDataflow<H> {
     /// O(Q * S * min(n_roles, S))
     /// Q' = Q
     fn project_to_flow(&mut self) {
-        let post_selects: Vec<(usize, PauliXZ, bool)> = self
-            .q_index_map
-            .iter()
-            .filter_map(|(dfp, q)| {
-                if let DataflowPoint::RoleControl(_, _) = dfp {
-                    Some((*q, PauliXZ::X, false))
-                } else {
-                    None
-                }
-            })
-            .collect_vec();
+        let post_selects: Vec<(usize, PauliXZ, bool)> = (0..self.tab.nb_qubits).filter_map(|q| {
+            if let Some(DataflowPoint::RoleControl(_, _)) = self.q_index_map.get_by_right(&q) {
+                Some((q, PauliXZ::X, false))
+            } else { None }
+        }).collect_vec();
         self.tab.post_select_1qs(&post_selects);
     }
 
     // O(Q * S^2)
     fn project_non_io(&mut self, inp: H::Node, out: H::Node) {
-        let non_ios: Vec<usize> = self
-            .q_index_map
-            .iter()
-            .filter(|(dfp, _)| match dfp {
+        let non_ios: Vec<usize> = (0..self.tab.nb_qubits).filter(|q| {
+            match self.q_index_map.get_by_right(q).unwrap() {
                 DataflowPoint::NodeIn(n, _, _)
                 | DataflowPoint::NodeOut(n, _, _)
                 | DataflowPoint::SumInControl(n, _, _, _, _)
@@ -677,9 +669,8 @@ impl<H: HugrView> StabilizerDataflow<H> {
                 | DataflowPoint::SumOutControl(n, _, _, _, _)
                 | DataflowPoint::SumOutPhControl(n, _, _, _) => *n != inp && *n != out,
                 _ => true,
-            })
-            .map(|(_, q)| *q)
-            .collect_vec();
+            }
+        }).collect_vec();
         let project_cols = chain!(
             non_ios.iter().map(|i| (*i, PauliXZ::X)),
             non_ios.iter().map(|i| (*i, PauliXZ::Z)),
@@ -2805,6 +2796,10 @@ impl<H: HugrView> SDFAnalysis<H> {
             self.run_dfg(hugr, node, detail_callback)
         };
         let loop_op = hugr.get_optype(node).as_tail_loop().unwrap();
+        println!("{}", loop_body.tab);
+        for i in 0..loop_body.tab.nb_qubits {
+            println!("{}\t{:?}", i, loop_body.q_index_map.get_by_right(&i).unwrap());
+        }
         // Gates can be hoisted out of a loop in multiple ways:
         // - Identifying that it is only run on the first/final loop iteration, when it has a canonical effect wrt the inputs/outputs of the loop (because we use TailLoops, at least one iteration is always performed, so this gate is performed precisely once)
         // - Folding all copies of a rotation gate into one another (this always implies it has a canonical effect wrt the inputs to the loop, and therefore can only be hoisted out the end of the loop when there is a loop invariant)
@@ -2841,6 +2836,7 @@ impl<H: HugrView> SDFAnalysis<H> {
                 0,
             ))
         {
+            continue_post_selects.push((*q, PauliXZ::Z, false));
             break_post_selects.push((*q, PauliXZ::Z, true));
         }
         let mut multiplicity = 0;
@@ -3159,21 +3155,14 @@ impl<H: HugrView> SDFAnalysis<H> {
 #[cfg(test)]
 mod test {
     use hugr::{
-        builder::{
-            endo_sig, Container, Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder,
-            HugrBuilder, SubContainer,
-        },
-        extension::{
-            prelude::{bool_t, qb_t, usize_t},
-            Version,
-        },
-        ops::{handle::NodeHandle, OpType, Value},
-        type_row,
-        types::Signature,
-        Extension, HugrView, IncomingPort, OutgoingPort,
+        Extension, Hugr, HugrView, IncomingPort, OutgoingPort, Wire, builder::{
+            BuildHandle, Container, DFGWrapper, Dataflow, DataflowHugr, DataflowSubContainer, FunctionBuilder, HugrBuilder, SubContainer, endo_sig
+        }, extension::{
+            Version, prelude::{ConstError, UnwrapBuilder, bool_t, qb_t, usize_t}, simple_op::MakeExtensionOp
+        }, ops::{OpType, Tag, Value, handle::{FuncID, NodeHandle}}, std_extensions::logic::LogicOp, type_row, types::{Signature, Type, TypeBase, TypeRow}
     };
-    use itertools::{chain, Itertools};
-    use tket::{extension::rotation::ConstRotation, TketOp};
+    use itertools::{Itertools, chain, interleave};
+    use tket::{TketOp, extension::{bool::BoolOp, rotation::{ConstRotation, rotation_type}}};
 
     use crate::{
         stabilizer_dataflow_complete::{
@@ -3200,6 +3189,734 @@ mod test {
             include_loop_body: true,
             rotation_override: true,
         }
+    }
+
+    #[test]
+    fn test_print_circuit() {
+        let mut builder = FunctionBuilder::new("cond", Signature::new(vec![qb_t(), qb_t(), bool_t()], vec![qb_t(), qb_t()])).unwrap();
+        let [qb0, qb1, b] = builder.input_wires_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb0), (qb_t(), qb1)], vec![qb_t(); 2].into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [c0q0, c0q1] = cond0_builder.input_wires_arr();
+        let cx = cond0_builder.add_dataflow_op(TketOp::CX, [c0q0, c0q1]).unwrap();
+        cond0_builder.finish_with_outputs([cx.out_wire(0), cx.out_wire(1)]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [c1q0, c1q1] = cond1_builder.input_wires_arr();
+        let t = cond1_builder.add_dataflow_op(TketOp::T, [c1q0]).unwrap();
+        let z = cond1_builder.add_dataflow_op(TketOp::Z, [c1q1]).unwrap();
+        cond1_builder.finish_with_outputs([t.out_wire(0), z.out_wire(0)]).ok();
+        let cond = cond_builder.finish_sub_container().unwrap();
+        let hugr = builder.finish_hugr_with_outputs([cond.out_wire(0), cond.out_wire(1)]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_print_constant_propagation() {
+        let mut builder = FunctionBuilder::new("bool_prop", endo_sig(vec![qb_t()])).unwrap();
+        let [qb] = builder.input_wires_arr();
+        let tag = builder.add_dataflow_op(Tag::new(1, vec![type_row![]; 2]), []).unwrap();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], tag.out_wire(0)), [(qb_t(), qb)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [c0qb] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([c0qb]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [c1qb] = cond1_builder.input_wires_arr();
+        let z = cond1_builder.add_dataflow_op(TketOp::Z, [c1qb]).unwrap();
+        cond1_builder.finish_with_outputs([z.out_wire(0)]).ok();
+        let cond = cond_builder.finish_sub_container().unwrap();
+        let hugr = builder.finish_hugr_with_outputs([cond.out_wire(0)]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_multi_conditional() {
+        let mut builder = FunctionBuilder::new("multi_conditional", Signature::new(vec![TypeBase::new_unit_sum(5)], vec![qb_t()])).unwrap();
+        let [five] = builder.input_wires_arr();
+        let mut cond_builder = builder.conditional_builder((vec![type_row![]; 5], five), [], vec![qb_t()].into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let alloc0 = cond0_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        cond0_builder.finish_with_outputs([alloc0.out_wire(0)]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let alloc1 = cond1_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let x = cond1_builder.add_dataflow_op(TketOp::X, [alloc1.out_wire(0)]).unwrap();
+        cond1_builder.finish_with_outputs([x.out_wire(0)]).ok();
+        let mut cond2_builder = cond_builder.case_builder(2).unwrap();
+        let alloc2 = cond2_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let h2 = cond2_builder.add_dataflow_op(TketOp::H, [alloc2.out_wire(0)]).unwrap();
+        cond2_builder.finish_with_outputs([h2.out_wire(0)]).ok();
+        let mut cond3_builder = cond_builder.case_builder(3).unwrap();
+        let alloc3 = cond3_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let h3 = cond3_builder.add_dataflow_op(TketOp::H, [alloc3.out_wire(0)]).unwrap();
+        let z = cond3_builder.add_dataflow_op(TketOp::Z, [h3.out_wire(0)]).unwrap();
+        cond3_builder.finish_with_outputs([z.out_wire(0)]).ok();
+        let mut cond4_builder = cond_builder.case_builder(4).unwrap();
+        let alloc4 = cond4_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap();
+        let vdg = cond4_builder.add_dataflow_op(TketOp::Vdg, [alloc4.out_wire(0)]).unwrap();
+        cond4_builder.finish_with_outputs([vdg.out_wire(0)]).ok();
+        let cond = cond_builder.finish_sub_container().unwrap();
+        let hugr = builder.finish_hugr_with_outputs([cond.out_wire(0)]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_print_nested_sums() {
+        let qb_row = TypeRow::from(qb_t());
+        let qb2_row = TypeRow::from(vec![qb_t(); 2]);
+        let inner_sum = Type::new_sum([type_row![], qb_row.clone()]);
+        let sum_qb_row = TypeRow::from(vec![inner_sum, qb_t()]);
+        let outer_sum = Type::new_sum([qb2_row.clone(), sum_qb_row.clone()]);
+        let mut builder = FunctionBuilder::new("nested_conds", Signature::new(vec![outer_sum], vec![qb_t(); 2])).unwrap();
+        let [s] = builder.input_wires_arr();
+        let mut cond_builder = builder.conditional_builder((vec![qb2_row.clone(), sum_qb_row], s), [], qb2_row).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [qb0, qb1] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([qb0, qb1]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [s, qb1] = cond1_builder.input_wires_arr();
+        let mut inner_cond_builder = cond1_builder.conditional_builder(([type_row![], qb_row.clone()], s), [], qb_row).unwrap();
+        let mut inner_cond0_builder = inner_cond_builder.case_builder(0).unwrap();
+        let [qb0] = inner_cond0_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        inner_cond0_builder.finish_with_outputs([qb0]).ok();
+        let inner_cond1_builder = inner_cond_builder.case_builder(1).unwrap();
+        let [qb0] = inner_cond1_builder.input_wires_arr();
+        inner_cond1_builder.finish_with_outputs([qb0]).ok();
+        let [qb0] = inner_cond_builder.finish_sub_container().unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([qb0, qb1]).ok();
+        let [qb0, qb1] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([qb0, qb1]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_recombine_ghz() {
+        let mut builder = FunctionBuilder::new("ghz_two_ways", Signature::new(vec![bool_t()], vec![qb_t(); 3])).unwrap();
+        let [b] = builder.input_wires_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q1] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::H, [q0]).unwrap().outputs_arr();
+        let [q0, q1] = builder.add_dataflow_op(TketOp::CX, [q0, q1]).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder((vec![type_row![], type_row![]], b), [(qb_t(), q0), (qb_t(), q1)], vec![qb_t(); 3].into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q0, q1] = cond0_builder.input_wires_arr();
+        let [q2] = cond0_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q0, q2] = cond0_builder.add_dataflow_op(TketOp::CX, [q0, q2]).unwrap().outputs_arr();
+        cond0_builder.finish_with_outputs([q0, q1, q2]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [q0, q1] = cond1_builder.input_wires_arr();
+        let [q2] = cond1_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q1, q2] = cond1_builder.add_dataflow_op(TketOp::CX, [q1, q2]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([q0, q1, q2]).ok();
+        let [q0, q1, q2] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([q0, q1, q2]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_loop_invariant() {
+        let mut builder = FunctionBuilder::new("loop_example", endo_sig(vec![qb_t(); 2])).unwrap();
+        let [qb0, qb1] = builder.input_wires_arr();
+        let mut loop_builder = builder.tail_loop_builder([], [(qb_t(), qb0), (qb_t(), qb1)], type_row![]).unwrap();
+        let [qb0, qb1] = loop_builder.input_wires_arr();
+        let [qb0, qb1] = loop_builder.add_dataflow_op(TketOp::CX, [qb0, qb1]).unwrap().outputs_arr();
+        let [qb1, qb0] = loop_builder.add_dataflow_op(TketOp::CX, [qb1, qb0]).unwrap().outputs_arr();
+        let [qb1, b] = loop_builder.add_dataflow_op(TketOp::Measure, [qb1]).unwrap().outputs_arr();
+        let [qb0, qb1] = loop_builder.add_dataflow_op(TketOp::CX, [qb0, qb1]).unwrap().outputs_arr();
+        let [qb0, qb1] = loop_builder.finish_with_outputs(b, [qb0, qb1]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([qb0, qb1]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        assert_eq!(summary.tab.nb_qubits, 4);
+        assert_eq!(summary.tab.nb_stabs, 4);
+        assert_eq!(summary.q_index_map.len(), 4);
+        let body_in = hugr
+            .children(func_node)
+            .filter(|n| matches!(hugr.get_optype(*n), OpType::Input(_)))
+            .exactly_one()
+            .ok()
+            .unwrap();
+        let body_out = hugr
+            .children(func_node)
+            .filter(|n| matches!(hugr.get_optype(*n), OpType::Output(_)))
+            .exactly_one()
+            .ok()
+            .unwrap();
+        assert_eq!(
+            *summary.q_index_map.get_by_right(&0).unwrap(),
+            DataflowPoint::NodeOut(body_in, OutgoingPort::from(0), vec![])
+        );
+        assert_eq!(
+            *summary.q_index_map.get_by_right(&1).unwrap(),
+            DataflowPoint::NodeIn(body_out, IncomingPort::from(1), vec![])
+        );
+        assert_eq!(
+            *summary.q_index_map.get_by_right(&2).unwrap(),
+            DataflowPoint::NodeOut(body_in, OutgoingPort::from(1), vec![])
+        );
+        assert_eq!(
+            *summary.q_index_map.get_by_right(&3).unwrap(),
+            DataflowPoint::NodeIn(body_out, IncomingPort::from(0), vec![])
+        );
+        summary.tab.echelon(&summary.tab.all_columns());
+        // XX commutes through
+        assert_eq!(summary.tab.stab_as_string(0), "+XXXX");
+        // ZI -> -ZI
+        assert_eq!(summary.tab.stab_as_string(1), "-Z  Z");
+        // -ZZ output stabilizer
+        assert_eq!(summary.tab.stab_as_string(2), "- Z Z");
+        // IZ -> ZI
+        assert_eq!(summary.tab.stab_as_string(3), "+  ZZ");
+    }
+
+    #[test]
+    fn test_conditional_hoisting() {
+        let mut builder = FunctionBuilder::new("cond_hoist", Signature::new(vec![qb_t(), qb_t(), bool_t(), rotation_type()], vec![qb_t(), qb_t()])).unwrap();
+        let [qb0, qb1, b, r] = builder.input_wires_arr();
+        let [qb0] = builder.add_dataflow_op(TketOp::Rx, [qb0, r]).unwrap().outputs_arr();
+        let [qb0, qb1] = builder.add_dataflow_op(TketOp::CX, [qb0, qb1]).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb0), (qb_t(), qb1), (rotation_type(), r)], vec![qb_t(), qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [qb0, qb1, _ri] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([qb0, qb1]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [qb0, qb1, ri] = cond1_builder.input_wires_arr();
+        let [qb1, qb0] = cond1_builder.add_dataflow_op(TketOp::CX, [qb1, qb0]).unwrap().outputs_arr();
+        let [qb0] = cond1_builder.add_dataflow_op(TketOp::Rz, [qb0, ri]).unwrap().outputs_arr();
+        let [qb1] = cond1_builder.add_dataflow_op(TketOp::Rx, [qb1, ri]).unwrap().outputs_arr();
+        let [qb1, qb0] = cond1_builder.add_dataflow_op(TketOp::CX, [qb1, qb0]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([qb0, qb1]).ok();
+        let [qb0, qb1] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let [qb0, qb1] = builder.add_dataflow_op(TketOp::CX, [qb0, qb1]).unwrap().outputs_arr();
+        let [qb1] = builder.add_dataflow_op(TketOp::Rz, [qb1, r]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([qb0, qb1]).unwrap();
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut default_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", hugr.mermaid_string());
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_repeat_until_success() {
+        let mut builder = FunctionBuilder::new("rus", endo_sig(vec![qb_t()])).unwrap();
+        let [qb0] = builder.input_wires_arr();
+        let mut loop_builder = builder.tail_loop_builder([], [(qb_t(), qb0)], type_row![]).unwrap();
+        let [qb0] = loop_builder.input_wires_arr();
+        let mut inner_loop_builder = loop_builder.tail_loop_builder([], [], vec![qb_t()].into()).unwrap();
+        let [qb1] = inner_loop_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [qb2] = inner_loop_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [qb1] = inner_loop_builder.add_dataflow_op(TketOp::H, [qb1]).unwrap().outputs_arr();
+        let [qb2] = inner_loop_builder.add_dataflow_op(TketOp::H, [qb2]).unwrap().outputs_arr();
+        let [qb2] = inner_loop_builder.add_dataflow_op(TketOp::Tdg, [qb2]).unwrap().outputs_arr();
+        let [qb1, qb2] = inner_loop_builder.add_dataflow_op(TketOp::CX, [qb1, qb2]).unwrap().outputs_arr();
+        let [qb2] = inner_loop_builder.add_dataflow_op(TketOp::T, [qb2]).unwrap().outputs_arr();
+        let [qb2] = inner_loop_builder.add_dataflow_op(TketOp::H, [qb2]).unwrap().outputs_arr();
+        let [b2] = inner_loop_builder.add_dataflow_op(TketOp::MeasureFree, [qb2]).unwrap().outputs_arr();
+        let [b2] = inner_loop_builder.add_dataflow_op(BoolOp::read, [b2]).unwrap().outputs_arr();
+        let [b2] = inner_loop_builder.add_dataflow_op(LogicOp::Not, [b2]).unwrap().outputs_arr();
+        let mut cond_builder = inner_loop_builder.conditional_builder(([type_row![], type_row![]], b2), [(qb_t(), qb1)], TypeBase::new_sum([type_row![], vec![qb_t()].into()]).into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [qb1] = cond0_builder.input_wires_arr();
+        cond0_builder.add_dataflow_op(TketOp::QFree, [qb1]).ok();
+        let [v] = cond0_builder.add_dataflow_op(Tag::new(0, [type_row![], vec![qb_t()].into()].into()), []).unwrap().outputs_arr();
+        cond0_builder.finish_with_outputs([v]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [qb1] = cond1_builder.input_wires_arr();
+        let [v] = cond1_builder.add_dataflow_op(Tag::new(1, [type_row![], vec![qb_t()].into()].into()), [qb1]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([v]).ok();
+        let [v] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let [qb1] = inner_loop_builder.finish_with_outputs(v, []).unwrap().outputs_arr();
+        let [qb0] = loop_builder.add_dataflow_op(TketOp::T, [qb0]).unwrap().outputs_arr();
+        let [qb0] = loop_builder.add_dataflow_op(TketOp::Z, [qb0]).unwrap().outputs_arr();
+        let [qb0, qb1] = loop_builder.add_dataflow_op(TketOp::CX, [qb0, qb1]).unwrap().outputs_arr();
+        let [qb1] = loop_builder.add_dataflow_op(TketOp::T, [qb1]).unwrap().outputs_arr();
+        let [qb1] = loop_builder.add_dataflow_op(TketOp::H, [qb1]).unwrap().outputs_arr();
+        let [b1] = loop_builder.add_dataflow_op(TketOp::MeasureFree, [qb1]).unwrap().outputs_arr();
+        let [b1] = loop_builder.add_dataflow_op(BoolOp::read, [b1]).unwrap().outputs_arr();
+        let [b1] = loop_builder.add_dataflow_op(LogicOp::Not, [b1]).unwrap().outputs_arr();
+        let [qb0] = loop_builder.finish_with_outputs(b1, [qb0]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([qb0]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+
+        let mut custom_settings = |n: hugr::Node| {
+            let ot = hugr.get_optype(n);
+            let include_interface = if let Some(extop) = ot.as_extension_op() {
+                if let Ok(tkop) = TketOp::from_extension_op(extop) {
+                    match tkop {
+                        TketOp::QAlloc | TketOp::H | TketOp::CX | TketOp::Z => false,
+                        _ => true
+                    }
+                }
+                else { true }
+            } else { !(ot.is_tail_loop() || ot.is_conditional()) };
+            DataflowSettings {
+                flow_level: DataflowFlowDetail::All,
+                include_external_interface: include_interface,
+                include_sum_types: true,
+                include_loop_body: false,
+                rotation_override: true,
+            }
+        };
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
+        let summary = summary_map.get(&func_node).unwrap();
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    fn add_pauli_error(builder: &mut DFGWrapper<Hugr, BuildHandle<FuncID<true>>>, qb : Wire, b: Wire, gate: TketOp) -> BuildHandle<hugr::ops::handle::ConditionalID> {
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), qb)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([q]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [q] = cond1_builder.input_wires_arr();
+        let [q] = cond1_builder.add_dataflow_op(gate, [q]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([q]).ok();
+        cond_builder.finish_sub_container().unwrap()
+    }
+
+    #[test]
+    fn test_fault_tolerant() {
+        // A circuit for ZZ phase between the first qubits from two iceberg blocks
+        // Expected to not be fault-tolerant
+        let mut builder = FunctionBuilder::new("iceberg_zz", Signature::new(chain![vec![qb_t(); 4], vec![rotation_type()], vec![bool_t(); 36]].collect_vec(), vec![qb_t(); 8])).unwrap();
+        let [a0, a1, b0, b1, r, xat, zat, xa0, za0, xa1, za1, xab, zab, xbt, zbt, xb0, zb0, xb1, zb1, xbb, zbb, xab_cx, zab_cx, xbb_cx, zbb_cx, xa0_cx, za0_cx, xb0_cx, zb0_cx, xbb_zz, zbb_zz, xb0_zz, zb0_zz, xab_out, zab_out, xbb_out, zbb_out, xa0_out, za0_out, xb0_out, zb0_out] = builder.input_wires_arr();
+        // Encoder (assume no noise)
+        // Stabilizers ZZZZ, XXXX
+        // Logicals XXII, IZIZ, XIXI, IIZZ
+        let [at] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [ab] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        // IIIZ -> IIIX
+        let [ab] = builder.add_dataflow_op(TketOp::H, [ab]).unwrap().outputs_arr();
+        // IZII -> IZIZ
+        // IIIX -> IXIX
+        let [ab, a0] = builder.add_dataflow_op(TketOp::CX, [ab, a0]).unwrap().outputs_arr();
+        // IIZI -> IIZZ
+        // IXIX -> IXXX
+        let [ab, a1] = builder.add_dataflow_op(TketOp::CX, [ab, a1]).unwrap().outputs_arr();
+        // IXII -> XXII
+        // ZIII -> ZZII
+        let [a0, at] = builder.add_dataflow_op(TketOp::CX, [a0, at]).unwrap().outputs_arr();
+        // IIXI -> XIXI
+        // ZZII -> ZZZI
+        let [a1, at] = builder.add_dataflow_op(TketOp::CX, [a1, at]).unwrap().outputs_arr();
+        // IXXX -> XXXX
+        // ZZZI -> ZZZZ
+        let [ab, at] = builder.add_dataflow_op(TketOp::CX, [ab, at]).unwrap().outputs_arr();
+        // Same for the b block
+        let [bt] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [bb] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [bb] = builder.add_dataflow_op(TketOp::H, [bb]).unwrap().outputs_arr();
+        let [bb, b0] = builder.add_dataflow_op(TketOp::CX, [bb, b0]).unwrap().outputs_arr();
+        let [bb, b1] = builder.add_dataflow_op(TketOp::CX, [bb, b1]).unwrap().outputs_arr();
+        let [b0, bt] = builder.add_dataflow_op(TketOp::CX, [b0, bt]).unwrap().outputs_arr();
+        let [b1, bt] = builder.add_dataflow_op(TketOp::CX, [b1, bt]).unwrap().outputs_arr();
+        let [bb, bt] = builder.add_dataflow_op(TketOp::CX, [bb, bt]).unwrap().outputs_arr();
+        // Errors at start of circuit
+        let [at] = add_pauli_error(&mut builder, at, xat, TketOp::X).outputs_arr();
+        let [at] = add_pauli_error(&mut builder, at, zat, TketOp::Z).outputs_arr();
+        let [a0] = add_pauli_error(&mut builder, a0, xa0, TketOp::X).outputs_arr();
+        let [a0] = add_pauli_error(&mut builder, a0, za0, TketOp::Z).outputs_arr();
+        let [a1] = add_pauli_error(&mut builder, a1, xa1, TketOp::X).outputs_arr();
+        let [a1] = add_pauli_error(&mut builder, a1, za1, TketOp::Z).outputs_arr();
+        let [ab] = add_pauli_error(&mut builder, ab, xab, TketOp::X).outputs_arr();
+        let [ab] = add_pauli_error(&mut builder, ab, zab, TketOp::Z).outputs_arr();
+        let [bt] = add_pauli_error(&mut builder, bt, xbt, TketOp::X).outputs_arr();
+        let [bt] = add_pauli_error(&mut builder, bt, zbt, TketOp::Z).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, xb0, TketOp::X).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, zb0, TketOp::Z).outputs_arr();
+        let [b1] = add_pauli_error(&mut builder, b1, xb1, TketOp::X).outputs_arr();
+        let [b1] = add_pauli_error(&mut builder, b1, zb1, TketOp::Z).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, xbb, TketOp::X).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, zbb, TketOp::Z).outputs_arr();
+        // CX[a.bottom, b.bottom]
+        let [ab, bb] = builder.add_dataflow_op(TketOp::CX, [ab, bb]).unwrap().outputs_arr();
+        // Errors from CX
+        let [ab] = add_pauli_error(&mut builder, ab, xab_cx, TketOp::X).outputs_arr();
+        let [ab] = add_pauli_error(&mut builder, ab, zab_cx, TketOp::Z).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, xbb_cx, TketOp::X).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, zbb_cx, TketOp::Z).outputs_arr();
+        // CX[a.q[a_target], b.q[b_target]]
+        let [a0, b0] = builder.add_dataflow_op(TketOp::CX, [a0, b0]).unwrap().outputs_arr();
+        // Errors from CX
+        let [a0] = add_pauli_error(&mut builder, a0, xa0_cx, TketOp::X).outputs_arr();
+        let [a0] = add_pauli_error(&mut builder, a0, za0_cx, TketOp::Z).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, xb0_cx, TketOp::X).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, zb0_cx, TketOp::Z).outputs_arr();
+        // ZZPhase[b.bottom, b.q[b_target]]
+        let [bb, b0] = builder.add_dataflow_op(TketOp::CX, [bb, b0]).unwrap().outputs_arr();
+        let [b0] = builder.add_dataflow_op(TketOp::Rz, [b0, r]).unwrap().outputs_arr();
+        let [bb, b0] = builder.add_dataflow_op(TketOp::CX, [bb, b0]).unwrap().outputs_arr();
+        // Errors from ZZPhase
+        let [bb] = add_pauli_error(&mut builder, bb, xbb_zz, TketOp::X).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, zbb_zz, TketOp::Z).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, xb0_zz, TketOp::X).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, zb0_zz, TketOp::Z).outputs_arr();
+        // CX[a.bottom, b.bottom]
+        let [ab, bb] = builder.add_dataflow_op(TketOp::CX, [ab, bb]).unwrap().outputs_arr();
+        // Errors from CX
+        let [ab] = add_pauli_error(&mut builder, ab, xab_out, TketOp::X).outputs_arr();
+        let [ab] = add_pauli_error(&mut builder, ab, zab_out, TketOp::Z).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, xbb_out, TketOp::X).outputs_arr();
+        let [bb] = add_pauli_error(&mut builder, bb, zbb_out, TketOp::Z).outputs_arr();
+        // CX[a.q[a_target], b.q[b_target]]
+        let [a0, b0] = builder.add_dataflow_op(TketOp::CX, [a0, b0]).unwrap().outputs_arr();
+        // Errors from CX
+        let [a0] = add_pauli_error(&mut builder, a0, xa0_out, TketOp::X).outputs_arr();
+        let [a0] = add_pauli_error(&mut builder, a0, za0_out, TketOp::Z).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, xb0_out, TketOp::X).outputs_arr();
+        let [b0] = add_pauli_error(&mut builder, b0, zb0_out, TketOp::Z).outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([at, a0, a1, ab, bt, b0, b1, bb]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        
+        let mut custom_settings = |n: hugr::Node| {
+            let ot = hugr.get_optype(n);
+            DataflowSettings {
+                flow_level: DataflowFlowDetail::All,
+                include_external_interface: false,
+                include_sum_types: !ot.is_input(),
+                include_loop_body: false,
+                rotation_override: true,
+            }
+        };
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        // let echelon_order: Vec<usize> = vec![11, 1, 3, 10, 9, 5, 7, 8, 32, 0, 2, 4, 6];
+        let echelon_order: Vec<usize> = vec![0, 2, 4, 6, 32, 11, 1, 3, 10, 9, 5, 7, 8];
+        // let echelon_order: Vec<usize> = vec![26, 27, 20, 21, 39, 40, 28, 29, 14, 15, 12, 13, 18, 19, 16, 17, 37, 38, 30, 31, 24, 25, 22, 23, 35, 36, 33, 34];
+        let echelon_columns = interleave(echelon_order.iter().map(|c| (*c, PauliXZ::X)), echelon_order.iter().map(|c| (*c, PauliXZ::Z))).collect_vec();
+        summary.tab.echelon(&echelon_columns);
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_five_q_code_syndromes() {
+        let mut builder = FunctionBuilder::new("five_q_code", Signature::new(chain!(vec![qb_t()], vec![bool_t(); 10]).collect_vec(), vec![qb_t(); 5])).unwrap();
+        let [q0, x0, z0, x1, z1, x2, z2, x3, z3, x4, z4] = builder.input_wires_arr();
+        // Encoder (not the most efficient, don't care, it just needs to prepare the right state)
+        // Logicals XXXXX, ZZZZZ
+        // Stabilizers XZZXI, IXZZX, XIXZZ, ZXIXZ
+        let [q1] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q2] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q3] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q4] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q1] = builder.add_dataflow_op(TketOp::H, [q1]).unwrap().outputs_arr();
+        let [q2] = builder.add_dataflow_op(TketOp::H, [q2]).unwrap().outputs_arr();
+        let [q3] = builder.add_dataflow_op(TketOp::H, [q3]).unwrap().outputs_arr();
+        let [q4] = builder.add_dataflow_op(TketOp::H, [q4]).unwrap().outputs_arr();
+        let [q1, q2] = builder.add_dataflow_op(TketOp::CZ, [q1, q2]).unwrap().outputs_arr();
+        let [q1, q3] = builder.add_dataflow_op(TketOp::CZ, [q1, q3]).unwrap().outputs_arr();
+        let [q1, q4] = builder.add_dataflow_op(TketOp::CZ, [q1, q4]).unwrap().outputs_arr();
+        let [q2, q3] = builder.add_dataflow_op(TketOp::CZ, [q2, q3]).unwrap().outputs_arr();
+        let [q2, q4] = builder.add_dataflow_op(TketOp::CZ, [q2, q4]).unwrap().outputs_arr();
+        let [q3, q4] = builder.add_dataflow_op(TketOp::CZ, [q3, q4]).unwrap().outputs_arr();
+        let [q3, q1] = builder.add_dataflow_op(TketOp::CX, [q3, q1]).unwrap().outputs_arr();
+        let [q1, q4] = builder.add_dataflow_op(TketOp::CX, [q1, q4]).unwrap().outputs_arr();
+        let [q4, q2] = builder.add_dataflow_op(TketOp::CX, [q4, q2]).unwrap().outputs_arr();
+        let [q0, q1] = builder.add_dataflow_op(TketOp::CX, [q0, q1]).unwrap().outputs_arr();
+        let [q0, q3] = builder.add_dataflow_op(TketOp::CX, [q0, q3]).unwrap().outputs_arr();
+        let [q2, q0] = builder.add_dataflow_op(TketOp::CX, [q2, q0]).unwrap().outputs_arr();
+        let [q4, q0] = builder.add_dataflow_op(TketOp::CX, [q4, q0]).unwrap().outputs_arr();
+        let [q1, q2] = builder.add_dataflow_op(TketOp::CX, [q1, q2]).unwrap().outputs_arr();
+        let [q3, q4] = builder.add_dataflow_op(TketOp::CX, [q3, q4]).unwrap().outputs_arr();
+        // Error channels
+        let [q0] = add_pauli_error(&mut builder, q0, x0, TketOp::X).outputs_arr();
+        let [q0] = add_pauli_error(&mut builder, q0, z0, TketOp::Z).outputs_arr();
+        let [q1] = add_pauli_error(&mut builder, q1, x1, TketOp::X).outputs_arr();
+        let [q1] = add_pauli_error(&mut builder, q1, z1, TketOp::Z).outputs_arr();
+        let [q2] = add_pauli_error(&mut builder, q2, x2, TketOp::X).outputs_arr();
+        let [q2] = add_pauli_error(&mut builder, q2, z2, TketOp::Z).outputs_arr();
+        let [q3] = add_pauli_error(&mut builder, q3, x3, TketOp::X).outputs_arr();
+        let [q3] = add_pauli_error(&mut builder, q3, z3, TketOp::Z).outputs_arr();
+        let [q4] = add_pauli_error(&mut builder, q4, x4, TketOp::X).outputs_arr();
+        let [q4] = add_pauli_error(&mut builder, q4, z4, TketOp::Z).outputs_arr();
+        // Syndrome measurements
+        let [s0] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [s1] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [s2] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [s3] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [s0] = builder.add_dataflow_op(TketOp::H, [s0]).unwrap().outputs_arr();
+        let [s1] = builder.add_dataflow_op(TketOp::H, [s1]).unwrap().outputs_arr();
+        let [s2] = builder.add_dataflow_op(TketOp::H, [s2]).unwrap().outputs_arr();
+        let [s3] = builder.add_dataflow_op(TketOp::H, [s3]).unwrap().outputs_arr();
+        let [s0, q0] = builder.add_dataflow_op(TketOp::CX, [s0, q0]).unwrap().outputs_arr();
+        let [s0, q1] = builder.add_dataflow_op(TketOp::CZ, [s0, q1]).unwrap().outputs_arr();
+        let [s0, q2] = builder.add_dataflow_op(TketOp::CZ, [s0, q2]).unwrap().outputs_arr();
+        let [s0, q3] = builder.add_dataflow_op(TketOp::CX, [s0, q3]).unwrap().outputs_arr();
+        let [s1, q1] = builder.add_dataflow_op(TketOp::CX, [s1, q1]).unwrap().outputs_arr();
+        let [s1, q2] = builder.add_dataflow_op(TketOp::CZ, [s1, q2]).unwrap().outputs_arr();
+        let [s1, q3] = builder.add_dataflow_op(TketOp::CZ, [s1, q3]).unwrap().outputs_arr();
+        let [s1, q4] = builder.add_dataflow_op(TketOp::CX, [s1, q4]).unwrap().outputs_arr();
+        let [s2, q2] = builder.add_dataflow_op(TketOp::CX, [s2, q2]).unwrap().outputs_arr();
+        let [s2, q3] = builder.add_dataflow_op(TketOp::CZ, [s2, q3]).unwrap().outputs_arr();
+        let [s2, q4] = builder.add_dataflow_op(TketOp::CZ, [s2, q4]).unwrap().outputs_arr();
+        let [s2, q0] = builder.add_dataflow_op(TketOp::CX, [s2, q0]).unwrap().outputs_arr();
+        let [s3, q3] = builder.add_dataflow_op(TketOp::CX, [s3, q3]).unwrap().outputs_arr();
+        let [s3, q4] = builder.add_dataflow_op(TketOp::CZ, [s3, q4]).unwrap().outputs_arr();
+        let [s3, q0] = builder.add_dataflow_op(TketOp::CZ, [s3, q0]).unwrap().outputs_arr();
+        let [s3, q1] = builder.add_dataflow_op(TketOp::CX, [s3, q1]).unwrap().outputs_arr();
+        let [s0] = builder.add_dataflow_op(TketOp::H, [s0]).unwrap().outputs_arr();
+        let [s1] = builder.add_dataflow_op(TketOp::H, [s1]).unwrap().outputs_arr();
+        let [s2] = builder.add_dataflow_op(TketOp::H, [s2]).unwrap().outputs_arr();
+        let [s3] = builder.add_dataflow_op(TketOp::H, [s3]).unwrap().outputs_arr();
+        let [_m0] = builder.add_dataflow_op(TketOp::MeasureFree, [s0]).unwrap().outputs_arr();
+        let [_m1] = builder.add_dataflow_op(TketOp::MeasureFree, [s1]).unwrap().outputs_arr();
+        let [_m2] = builder.add_dataflow_op(TketOp::MeasureFree, [s2]).unwrap().outputs_arr();
+        let [_m3] = builder.add_dataflow_op(TketOp::MeasureFree, [s3]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([q0, q1, q2, q3, q4]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        let func_node = hugr.first_child(hugr.module_root()).unwrap();
+        
+        let mut custom_settings = |n: hugr::Node| {
+            let ot = hugr.get_optype(n);
+            DataflowSettings {
+                flow_level: DataflowFlowDetail::All,
+                include_external_interface: false,
+                include_sum_types: !ot.is_input(),
+                include_loop_body: false,
+                rotation_override: true,
+            }
+        };
+        let summary_map = SDFAnalysis::summarise_targets(&hugr, &vec![func_node], &mut custom_settings);
+        let mut summary = summary_map.get(&func_node).unwrap().clone();
+        // let echelon_order: Vec<usize> = vec![11, 1, 3, 10, 9, 5, 7, 8, 32, 0, 2, 4, 6];
+        let echelon_order: Vec<usize> = vec![0, 1, 9, 8, 7, 6, 5, 26, 27, 4, 24, 25, 3, 22, 23, 2, 20, 21];
+        // let echelon_order: Vec<usize> = vec![26, 27, 20, 21, 39, 40, 28, 29, 14, 15, 12, 13, 18, 19, 16, 17, 37, 38, 30, 31, 24, 25, 22, 23, 35, 36, 33, 34];
+        let echelon_columns = interleave(echelon_order.iter().map(|c| (*c, PauliXZ::X)), echelon_order.iter().map(|c| (*c, PauliXZ::Z))).collect_vec();
+        summary.tab.echelon(&echelon_columns);
+        println!("{}", summary.tab);
+        for i in 0..summary.tab.nb_qubits {
+            println!("{}\t{:?}", i, summary.q_index_map.get_by_right(&i).unwrap());
+        }
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_print_preliminary_example() {
+        let mut builder = FunctionBuilder::new("my_func", Signature::new(vec![qb_t(), qb_t()], vec![qb_t(), qb_t()])).unwrap();
+        let [q0, q1] = builder.input_wires_arr();
+        let [anc] = builder.add_dataflow_op(TketOp::TryQAlloc, []).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], vec![qb_t()].into()], anc), [(qb_t(), q0)], vec![qb_t(), bool_t()].into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q0] = cond0_builder.input_wires_arr();
+        let [q0] = cond0_builder.add_dataflow_op(TketOp::S, [q0]).unwrap().outputs_arr();
+        let [tag] = cond0_builder.add_dataflow_op(Tag::new(0, vec![type_row![]; 2]), []).unwrap().outputs_arr();
+        cond0_builder.finish_with_outputs([q0, tag]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [anc, q0] = cond1_builder.input_wires_arr();
+        let [anc] = cond1_builder.add_dataflow_op(TketOp::H, [anc]).unwrap().outputs_arr();
+        let [anc] = cond1_builder.add_dataflow_op(TketOp::S, [anc]).unwrap().outputs_arr();
+        let [anc, q0] = cond1_builder.add_dataflow_op(TketOp::CX, [anc, q0]).unwrap().outputs_arr();
+        let [q0, res] = cond1_builder.add_dataflow_op(TketOp::Measure, [q0]).unwrap().outputs_arr();
+        cond1_builder.add_dataflow_op(TketOp::QFree, [q0]).ok();
+        cond1_builder.finish_with_outputs([anc, res]).ok();
+        let [q0, correct] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let [q0, q1] = builder.add_dataflow_op(TketOp::CX, [q0, q1]).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], correct), [(qb_t(), q0)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q0] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([q0]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [q0] = cond1_builder.input_wires_arr();
+        let [q0] = cond1_builder.add_dataflow_op(TketOp::Y, [q0]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([q0]).ok();
+        let [q0] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], correct), [(qb_t(), q1)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q1] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([q1]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [q1] = cond1_builder.input_wires_arr();
+        let [q1] = cond1_builder.add_dataflow_op(TketOp::X, [q1]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([q1]).ok();
+        let [q1] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([q0, q1]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_print_assertion() {
+        let mut builder = FunctionBuilder::new("assertion", endo_sig(vec![qb_t(); 2])).unwrap();
+        let [q0, q1] = builder.input_wires_arr();
+        let [anc] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [anc] = builder.add_dataflow_op(TketOp::H, [anc]).unwrap().outputs_arr();
+        let [anc, q0] = builder.add_dataflow_op(TketOp::CZ, [anc, q0]).unwrap().outputs_arr();
+        let [anc, q1] = builder.add_dataflow_op(TketOp::CY, [anc, q1]).unwrap().outputs_arr();
+        let [anc] = builder.add_dataflow_op(TketOp::H, [anc]).unwrap().outputs_arr();
+        let [anc, b] = builder.add_dataflow_op(TketOp::Measure, [anc]).unwrap().outputs_arr();
+        builder.add_dataflow_op(TketOp::QFree, [anc]).ok();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b), [], type_row![]).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        cond0_builder.finish_with_outputs([]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let err = ConstError::new(0, "Error detected");
+        cond1_builder.add_panic(err, [], []).ok();
+        cond1_builder.finish_with_outputs([]).ok();
+        cond_builder.finish_sub_container().ok();
+        let hugr = builder.finish_hugr_with_outputs([q0, q1]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_loop_internal() {
+        let mut builder = FunctionBuilder::new("loop", Signature::new(vec![qb_t(); 2], vec![qb_t()])).unwrap();
+        let [q0, q1] = builder.input_wires_arr();
+        let mut tl_builder = builder.tail_loop_builder([(qb_t(), q0)], [(qb_t(), q1)], type_row![]).unwrap();
+        let [q0, q1] = tl_builder.input_wires_arr();
+        let [q1, q0] = tl_builder.add_dataflow_op(TketOp::CX, [q1, q0]).unwrap().outputs_arr();
+        let [q0] = tl_builder.add_dataflow_op(TketOp::T, [q0]).unwrap().outputs_arr();
+        let [q1] = tl_builder.add_dataflow_op(TketOp::Tdg, [q1]).unwrap().outputs_arr();
+        let [q0] = tl_builder.add_dataflow_op(TketOp::H, [q0]).unwrap().outputs_arr();
+        let [q0, b] = tl_builder.add_dataflow_op(TketOp::Measure, [q0]).unwrap().outputs_arr();
+        tl_builder.add_dataflow_op(TketOp::QFree, [q0]).ok();
+        let mut cond_builder = tl_builder.conditional_builder(([type_row![], type_row![]], b), [(qb_t(), q1)], vec![Type::new_sum([vec![qb_t()].into(), type_row![]]), qb_t()].into()).unwrap();
+        let mut cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q1] = cond0_builder.input_wires_arr();
+        let [q0] = cond0_builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q0] = cond0_builder.add_dataflow_op(Tag::new(0, vec![vec![qb_t()].into(), type_row![]]), [q0]).unwrap().outputs_arr();
+        cond0_builder.finish_with_outputs([q0, q1]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [q1] = cond1_builder.input_wires_arr();
+        let [q1] = cond1_builder.add_dataflow_op(TketOp::H, [q1]).unwrap().outputs_arr();
+        let [q1] = cond1_builder.add_dataflow_op(TketOp::T, [q1]).unwrap().outputs_arr();
+        let [q0] = cond1_builder.add_dataflow_op(Tag::new(1, vec![vec![qb_t()].into(), type_row![]]), []).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([q0, q1]).ok();
+        let [q0, q1] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let [q1] = tl_builder.finish_with_outputs(q0, [q1]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([q1]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_back_and_forth() {
+        let mut builder = FunctionBuilder::new("bidirectional", Signature::new(vec![], vec![qb_t()])).unwrap();
+        let [q0] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q1] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q2] = builder.add_dataflow_op(TketOp::QAlloc, []).unwrap().outputs_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::X, [q0]).unwrap().outputs_arr();
+        let [q1] = builder.add_dataflow_op(TketOp::H, [q1]).unwrap().outputs_arr();
+        let [q1, q2] = builder.add_dataflow_op(TketOp::CX, [q1, q2]).unwrap().outputs_arr();
+        let [q0, b0] = builder.add_dataflow_op(TketOp::Measure, [q0]).unwrap().outputs_arr();
+        let [] = builder.add_dataflow_op(TketOp::QFree, [q0]).unwrap().outputs_arr();
+        let [q1, b1] = builder.add_dataflow_op(TketOp::Measure, [q1]).unwrap().outputs_arr();
+        let [] = builder.add_dataflow_op(TketOp::QFree, [q1]).unwrap().outputs_arr();
+        let [b2] = builder.add_dataflow_op(LogicOp::And, [b0, b1]).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b2), [], type_row![]).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        cond0_builder.finish_with_outputs([]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let err = ConstError::new(0, "Error detected");
+        cond1_builder.add_panic(err, [], []).ok();
+        cond1_builder.finish_with_outputs([]).ok();
+        cond_builder.finish_sub_container().ok();
+        let hugr = builder.finish_hugr_with_outputs([q2]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_dynamic_merge() {
+        let mut builder = FunctionBuilder::new("dynamic_merge", Signature::new(vec![qb_t(); 2], vec![bool_t(); 2])).unwrap();
+        let [q0, q1] = builder.input_wires_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::T, [q0]).unwrap().outputs_arr();
+        let [q1] = builder.add_dataflow_op(TketOp::T, [q1]).unwrap().outputs_arr();
+        let [q0, q1] = builder.add_dataflow_op(TketOp::CX, [q0, q1]).unwrap().outputs_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::H, [q0]).unwrap().outputs_arr();
+        let [b0] = builder.add_dataflow_op(TketOp::MeasureFree, [q0]).unwrap().outputs_arr();
+        let [b0] = builder.add_dataflow_op(BoolOp::read, [b0]).unwrap().outputs_arr();
+        let mut cond_builder = builder.conditional_builder(([type_row![], type_row![]], b0), [(qb_t(), q1)], vec![qb_t()].into()).unwrap();
+        let cond0_builder = cond_builder.case_builder(0).unwrap();
+        let [q1] = cond0_builder.input_wires_arr();
+        cond0_builder.finish_with_outputs([q1]).ok();
+        let mut cond1_builder = cond_builder.case_builder(1).unwrap();
+        let [q1] = cond1_builder.input_wires_arr();
+        let [q1] = cond1_builder.add_dataflow_op(TketOp::X, [q1]).unwrap().outputs_arr();
+        cond1_builder.finish_with_outputs([q1]).ok();
+        let [q1] = cond_builder.finish_sub_container().unwrap().outputs_arr();
+        let [b1] = builder.add_dataflow_op(TketOp::MeasureFree, [q1]).unwrap().outputs_arr();
+        let [b1] = builder.add_dataflow_op(BoolOp::read, [b1]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([b0, b1]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        // assert!(false);
+    }
+
+    #[test]
+    fn test_dynamic_merge2() {
+        let mut builder = FunctionBuilder::new("dynamic_merge", Signature::new(vec![qb_t(); 2], vec![bool_t(); 2])).unwrap();
+        let [q0, q1] = builder.input_wires_arr();
+        let [q1] = builder.add_dataflow_op(TketOp::T, [q1]).unwrap().outputs_arr();
+        let [q0, q1] = builder.add_dataflow_op(TketOp::CX, [q0, q1]).unwrap().outputs_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::T, [q0]).unwrap().outputs_arr();
+        let [q0] = builder.add_dataflow_op(TketOp::H, [q0]).unwrap().outputs_arr();
+        let [b1] = builder.add_dataflow_op(TketOp::MeasureFree, [q1]).unwrap().outputs_arr();
+        let [b1] = builder.add_dataflow_op(BoolOp::read, [b1]).unwrap().outputs_arr();
+        let [b0] = builder.add_dataflow_op(TketOp::MeasureFree, [q0]).unwrap().outputs_arr();
+        let [b0] = builder.add_dataflow_op(BoolOp::read, [b0]).unwrap().outputs_arr();
+        let [b1] = builder.add_dataflow_op(LogicOp::Xor, [b0, b1]).unwrap().outputs_arr();
+        let hugr = builder.finish_hugr_with_outputs([b0, b1]).unwrap();
+        println!("{}", hugr.mermaid_string());
+        assert!(false);
     }
 
     #[test]

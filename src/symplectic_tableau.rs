@@ -504,17 +504,20 @@ impl SymplecticTableau {
     //      For each of min(cols.len(), S) pivots, deleting the stabilizer takes O(Q)
     pub fn project_cols_to_zero(&mut self, cols: &Vec<(usize, PauliXZ)>) {
         self.echelon(cols);
+        if self.nb_stabs == 0 { return; }
         let mut num_to_remove = 0;
         for (qubit, p) in cols {
             match p {
                 PauliXZ::X => {
                     if self.x[num_to_remove].get(*qubit) {
                         num_to_remove += 1;
+                        if num_to_remove == self.nb_stabs { break; }
                     }
                 }
                 PauliXZ::Z => {
                     if self.z[num_to_remove].get(*qubit) {
                         num_to_remove += 1;
+                        if num_to_remove == self.nb_stabs { break; }
                     }
                 }
             }
@@ -1118,7 +1121,9 @@ impl Display for SymplecticTableau {
 
 #[cfg(test)]
 mod test {
-    use crate::symplectic_tableau::SymplecticTableau;
+    use itertools::{Itertools, chain};
+
+    use crate::symplectic_tableau::{PauliXZ, SymplecticTableau};
 
     #[test]
     fn test_joint_decomposition() {
@@ -1274,5 +1279,29 @@ mod test {
         for i in 0..tab4.nb_stabs {
             assert_eq!(tab4.stab_as_string(i), cm_4.stab_as_string(i));
         }
+    }
+
+    #[test]
+    fn test_projection_bug() {
+        let mut tab = SymplecticTableau::new(19);
+        tab.add_string("           Z       ", false).ok();
+        tab.add_string("          X   Z    ", true).ok();
+        tab.add_string("           Z   Z   ", false).ok();
+        tab.add_string("Z  Z               ", false).ok();
+        tab.add_string("Z   Z              ", false).ok();
+        tab.add_string("    Z Z            ", false).ok();
+        tab.add_string("      ZZ           ", false).ok();
+        tab.add_string("        ZZ         ", true).ok();
+        tab.add_string("       ZZ          ", false).ok();
+        tab.add_string("            Z   Z  ", false).ok();
+        tab.add_string(" X           X   X ", false).ok();
+        tab.add_string("ZZX        Z Z Z   ", false).ok();
+        tab.add_string("         Z     Z   ", false).ok();
+        let to_project: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17];
+        let project_cols = chain!(
+            to_project.iter().map(|i| (*i, PauliXZ::X)),
+            to_project.iter().map(|i| (*i, PauliXZ::Z)),
+        ).collect_vec();
+        tab.project_cols_to_zero(&project_cols);
     }
 }

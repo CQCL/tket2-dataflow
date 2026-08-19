@@ -1,0 +1,355 @@
+graph LR
+    subgraph 0 ["(0) Module"]
+        direction LR
+        subgraph 1 ["(1) [**FuncDefn: #quot;__main__.main_jpmc#quot;**]"]
+            direction LR
+            style 1 stroke:#832561,stroke-width:3px
+            2["(2) Input"]
+            3["(3) Output"]
+            subgraph 4 ["(4) CFG"]
+                direction LR
+                subgraph 5 ["(5) DataflowBlock"]
+                    direction LR
+                    6["(6) Input"]
+                    7["(7) Output"]
+                    8["(8) tket.quantum.QAlloc"]
+                    9["(9) tket.quantum.QAlloc"]
+                    10["(10) tket.quantum.QAlloc"]
+                    11["(11) tket.quantum.QAlloc"]
+                    12["(12) tket.quantum.QAlloc"]
+                    13["(13) prelude.MakeTuple"]
+                    14["(14) prelude.UnpackTuple"]
+                    15["(15) tket.quantum.H"]
+                    16["(16) prelude.MakeTuple"]
+                    17["(17) tket.quantum.H"]
+                    18["(18) prelude.MakeTuple"]
+                    19["(19) tket.quantum.S"]
+                    20["(20) prelude.MakeTuple"]
+                    21["(21) tket.quantum.Z"]
+                    22["(22) prelude.MakeTuple"]
+                    23["(23) prelude.MakeTuple"]
+                    24["(24) tket.quantum.H"]
+                    25["(25) prelude.MakeTuple"]
+                    26["(26) Call"]
+                    27["(27) prelude.MakeTuple"]
+                    28["(28) tket.quantum.H"]
+                    29["(29) prelude.MakeTuple"]
+                    30["(30) tket.quantum.CX"]
+                    31["(31) prelude.MakeTuple"]
+                    32["(32) tket.quantum.H"]
+                    33["(33) prelude.MakeTuple"]
+                    34["(34) tket.quantum.H"]
+                    35["(35) prelude.MakeTuple"]
+                    36["(36) Call"]
+                    37["(37) prelude.MakeTuple"]
+                    38["(38) Call"]
+                    39["(39) prelude.MakeTuple"]
+                    40["(40) tket.quantum.CX"]
+                    41["(41) prelude.MakeTuple"]
+                    42["(42) tket.quantum.CZ"]
+                    43["(43) prelude.MakeTuple"]
+                    44["(44) tket.quantum.H"]
+                    45["(45) prelude.MakeTuple"]
+                    46["(46) Call"]
+                    47["(47) prelude.MakeTuple"]
+                    48["(48) tket.quantum.H"]
+                    49["(49) prelude.MakeTuple"]
+                    50["(50) prelude.MakeTuple"]
+                    51["(51) prelude.MakeTuple"]
+                    52["(52) tket.quantum.H"]
+                    53["(53) prelude.MakeTuple"]
+                    54["(54) Call"]
+                    55["(55) prelude.MakeTuple"]
+                    56["(56) tket.quantum.H"]
+                    57["(57) prelude.MakeTuple"]
+                    58["(58) tket.quantum.CX"]
+                    59["(59) prelude.MakeTuple"]
+                    60["(60) tket.quantum.X"]
+                    61["(61) prelude.MakeTuple"]
+                    62["(62) tket.quantum.CX"]
+                    63["(63) prelude.MakeTuple"]
+                    64["(64) tket.quantum.X"]
+                    65["(65) prelude.MakeTuple"]
+                    66["(66) tket.quantum.V"]
+                    67["(67) prelude.MakeTuple"]
+                    68["(68) tket.quantum.T"]
+                    69["(69) prelude.MakeTuple"]
+                    70["(70) tket.quantum.CX"]
+                    71["(71) prelude.MakeTuple"]
+                    72["(72) tket.quantum.Tdg"]
+                    73["(73) prelude.MakeTuple"]
+                    74["(74) tket.quantum.CX"]
+                    75["(75) prelude.MakeTuple"]
+                    76["(76) tket.quantum.Vdg"]
+                    77["(77) prelude.MakeTuple"]
+                    78["(78) prelude.MakeTuple"]
+                    79["(79) tket.quantum.H"]
+                    80["(80) prelude.MakeTuple"]
+                    81["(81) Call"]
+                    82["(82) prelude.MakeTuple"]
+                    83["(83) tket.quantum.H"]
+                    84["(84) prelude.MakeTuple"]
+                    85["(85) tket.quantum.H"]
+                    86["(86) prelude.MakeTuple"]
+                    87["(87) Call"]
+                    88["(88) prelude.MakeTuple"]
+                    89["(89) tket.quantum.H"]
+                    90["(90) prelude.MakeTuple"]
+                    91["(91) prelude.MakeTuple"]
+                    92["(92) tket.quantum.CZ"]
+                    93["(93) prelude.MakeTuple"]
+                    94["(94) tket.quantum.CX"]
+                    95["(95) prelude.MakeTuple"]
+                    96["(96) Call"]
+                    97["(97) prelude.MakeTuple"]
+                    98["(98) Call"]
+                    99["(99) prelude.MakeTuple"]
+                    100["(100) tket.quantum.H"]
+                    101["(101) prelude.MakeTuple"]
+                    102["(102) tket.quantum.H"]
+                    103["(103) prelude.MakeTuple"]
+                    104["(104) tket.quantum.CX"]
+                    105["(105) prelude.MakeTuple"]
+                    106["(106) tket.quantum.H"]
+                    107["(107) prelude.MakeTuple"]
+                    108["(108) Call"]
+                    109["(109) prelude.MakeTuple"]
+                    110["(110) tket.quantum.H"]
+                    111["(111) prelude.MakeTuple"]
+                    112["(112) prelude.MakeTuple"]
+                    113["(113) tket.quantum.MeasureFree"]
+                    114["(114) tket.bool.read"]
+                    115["(115) tket.result.result_bool"]
+                    116["(116) prelude.MakeTuple"]
+                    117["(117) tket.quantum.MeasureFree"]
+                    118["(118) tket.bool.read"]
+                    119["(119) tket.result.result_bool"]
+                    120["(120) prelude.MakeTuple"]
+                    121["(121) tket.quantum.MeasureFree"]
+                    122["(122) tket.bool.read"]
+                    123["(123) tket.result.result_bool"]
+                    124["(124) prelude.MakeTuple"]
+                    125["(125) collections.borrow_arr.new_array"]
+                    126["(126) collections.borrow_arr.to_array"]
+                    127["(127) tket.debug.StateResult"]
+                    128["(128) collections.borrow_arr.from_array"]
+                    129["(129) collections.borrow_arr.unpack"]
+                    130["(130) prelude.MakeTuple"]
+                    131["(131) tket.quantum.QFree"]
+                    132["(132) prelude.MakeTuple"]
+                    133["(133) tket.quantum.QFree"]
+                    134["(134) prelude.MakeTuple"]
+                    135["(135) Tag"]
+                    6-."0:0".->8
+                    8--"0:0<br>qubit"-->13
+                    8-."1:0".->9
+                    9--"0:1<br>qubit"-->13
+                    9-."1:0".->10
+                    10--"0:2<br>qubit"-->13
+                    10-."1:0".->11
+                    11--"0:3<br>qubit"-->13
+                    11-."1:0".->12
+                    12--"0:4<br>qubit"-->13
+                    12-."1:3".->26
+                    13--"0:0<br>[qubit, qubit, qubit, qubit, qubit]"-->14
+                    14--"0:0<br>qubit"-->15
+                    14--"1:0<br>qubit"-->17
+                    14--"2:0<br>qubit"-->32
+                    14--"3:0<br>qubit"-->34
+                    14--"4:1<br>qubit"-->58
+                    15--"0:0<br>qubit"-->19
+                    17--"0:0<br>qubit"-->21
+                    19--"0:0<br>qubit"-->24
+                    21--"0:1<br>qubit"-->26
+                    24--"0:0<br>qubit"-->26
+                    26--"0:1<br>qubit"-->30
+                    26--"1:0<br>qubit"-->28
+                    26-."2:3".->36
+                    28--"0:0<br>qubit"-->30
+                    30--"0:1<br>qubit"-->36
+                    30--"1:1<br>qubit"-->38
+                    32--"0:1<br>qubit"-->42
+                    34--"0:0<br>qubit"-->36
+                    36--"0:0<br>qubit"-->38
+                    36--"1:0<br>qubit"-->40
+                    36-."2:3".->38
+                    38--"0:1<br>qubit"-->54
+                    38--"1:1<br>qubit"-->40
+                    38-."2:3".->46
+                    40--"0:0<br>qubit"-->44
+                    40--"1:0<br>qubit"-->42
+                    42--"0:0<br>qubit"-->46
+                    42--"1:0<br>qubit"-->52
+                    44--"0:1<br>qubit"-->46
+                    46--"0:0<br>qubit"-->48
+                    46--"1:1<br>qubit"-->81
+                    46-."2:3".->54
+                    48--"0:0<br>qubit"-->79
+                    52--"0:0<br>qubit"-->54
+                    54--"0:0<br>qubit"-->58
+                    54--"1:0<br>qubit"-->56
+                    54-."2:3".->81
+                    56--"0:0<br>qubit"-->60
+                    58--"0:0<br>qubit"-->87
+                    58--"1:1<br>qubit"-->62
+                    60--"0:0<br>qubit"-->62
+                    62--"0:0<br>qubit"-->64
+                    62--"1:0<br>qubit"-->66
+                    64--"0:0<br>qubit"-->70
+                    66--"0:0<br>qubit"-->68
+                    68--"0:1<br>qubit"-->70
+                    70--"0:0<br>qubit"-->74
+                    70--"1:0<br>qubit"-->72
+                    72--"0:1<br>qubit"-->74
+                    74--"0:0<br>qubit"-->85
+                    74--"1:0<br>qubit"-->76
+                    76--"0:0<br>qubit"-->121
+                    79--"0:0<br>qubit"-->81
+                    81--"0:0<br>qubit"-->92
+                    81--"1:0<br>qubit"-->83
+                    81-."2:3".->87
+                    83--"0:0<br>qubit"-->94
+                    85--"0:1<br>qubit"-->87
+                    87--"0:0<br>qubit"-->89
+                    87--"1:0<br>qubit"-->96
+                    87-."2:3".->96
+                    89--"0:1<br>qubit"-->92
+                    92--"0:1<br>qubit"-->94
+                    92--"1:0<br>qubit"-->100
+                    94--"0:1<br>qubit"-->98
+                    94--"1:1<br>qubit"-->96
+                    96--"0:0<br>qubit"-->98
+                    96--"1:1<br>qubit"-->104
+                    96-."2:3".->98
+                    98--"0:0<br>qubit"-->102
+                    98--"1:0<br>qubit"-->104
+                    98-."2:3".->108
+                    100--"0:0<br>qubit"-->113
+                    102--"0:0<br>qubit"-->117
+                    104--"0:0<br>qubit"-->106
+                    104--"1:0<br>qubit"-->108
+                    106--"0:1<br>qubit"-->108
+                    108--"0:0<br>qubit"-->110
+                    108--"1:1<br>qubit"-->125
+                    108-."2:1".->113
+                    110--"0:0<br>qubit"-->125
+                    113--"0:0<br>bool"-->114
+                    113-."1:1".->115
+                    114--"0:0<br>Bool"-->115
+                    115-."0:1".->117
+                    117--"0:0<br>bool"-->118
+                    117-."1:1".->119
+                    118--"0:0<br>Bool"-->119
+                    119-."0:1".->121
+                    121--"0:0<br>bool"-->122
+                    121-."1:1".->123
+                    122--"0:0<br>Bool"-->123
+                    123-."0:1".->127
+                    125--"0:0<br>borrow_array(2, qubit)"-->126
+                    126--"0:0<br>array(2, qubit)"-->127
+                    127--"0:0<br>array(2, qubit)"-->128
+                    127-."1:1".->131
+                    128--"0:0<br>borrow_array(2, qubit)"-->129
+                    129--"0:0<br>qubit"-->131
+                    129--"1:0<br>qubit"-->133
+                    131-."0:1".->133
+                    133-."0:1".->7
+                    135--"0:0<br>Unit"-->7
+                end
+                136["(136) ExitBlock"]
+                5-."0:0".->136
+            end
+            2-."0:0".->4
+            4-."0:0".->3
+        end
+        subgraph 137 ["(137) FuncDefn: #quot;__main__.csdg#quot;"]
+            direction LR
+            138["(138) Input"]
+            139["(139) Output"]
+            subgraph 140 ["(140) CFG"]
+                direction LR
+                subgraph 141 ["(141) DataflowBlock"]
+                    direction LR
+                    142["(142) Input"]
+                    143["(143) Output"]
+                    144["(144) tket.quantum.Tdg"]
+                    145["(145) prelude.MakeTuple"]
+                    146["(146) tket.quantum.Tdg"]
+                    147["(147) prelude.MakeTuple"]
+                    148["(148) tket.quantum.CX"]
+                    149["(149) prelude.MakeTuple"]
+                    150["(150) tket.quantum.T"]
+                    151["(151) prelude.MakeTuple"]
+                    152["(152) tket.quantum.CX"]
+                    153["(153) prelude.MakeTuple"]
+                    154["(154) Tag"]
+                    142--"0:0<br>qubit"-->144
+                    142--"1:0<br>qubit"-->146
+                    144--"0:0<br>qubit"-->148
+                    146--"0:1<br>qubit"-->148
+                    148--"0:0<br>qubit"-->152
+                    148--"1:0<br>qubit"-->150
+                    150--"0:1<br>qubit"-->152
+                    152--"0:1<br>qubit"-->143
+                    152--"1:2<br>qubit"-->143
+                    154--"0:0<br>Unit"-->143
+                end
+                155["(155) ExitBlock"]
+                141-."0:0".->155
+            end
+            138--"0:0<br>qubit"-->140
+            138--"1:1<br>qubit"-->140
+            140--"0:0<br>qubit"-->139
+            140--"1:1<br>qubit"-->139
+        end
+        subgraph 156 ["(156) FuncDefn: #quot;__main__.cs#quot;"]
+            direction LR
+            157["(157) Input"]
+            158["(158) Output"]
+            subgraph 159 ["(159) CFG"]
+                direction LR
+                subgraph 160 ["(160) DataflowBlock"]
+                    direction LR
+                    161["(161) Input"]
+                    162["(162) Output"]
+                    163["(163) tket.quantum.T"]
+                    164["(164) prelude.MakeTuple"]
+                    165["(165) tket.quantum.T"]
+                    166["(166) prelude.MakeTuple"]
+                    167["(167) tket.quantum.CX"]
+                    168["(168) prelude.MakeTuple"]
+                    169["(169) tket.quantum.Tdg"]
+                    170["(170) prelude.MakeTuple"]
+                    171["(171) tket.quantum.CX"]
+                    172["(172) prelude.MakeTuple"]
+                    173["(173) Tag"]
+                    161--"0:0<br>qubit"-->163
+                    161--"1:0<br>qubit"-->165
+                    163--"0:0<br>qubit"-->167
+                    165--"0:1<br>qubit"-->167
+                    167--"0:0<br>qubit"-->171
+                    167--"1:0<br>qubit"-->169
+                    169--"0:1<br>qubit"-->171
+                    171--"0:1<br>qubit"-->162
+                    171--"1:2<br>qubit"-->162
+                    173--"0:0<br>Unit"-->162
+                end
+                174["(174) ExitBlock"]
+                160-."0:0".->174
+            end
+            157--"0:0<br>qubit"-->159
+            157--"1:1<br>qubit"-->159
+            159--"0:0<br>qubit"-->158
+            159--"1:1<br>qubit"-->158
+        end
+        137--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->26
+        137--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->54
+        137--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->81
+        137--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->96
+        137--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->98
+        156--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->36
+        156--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->38
+        156--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->46
+        156--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->87
+        156--"0:2<br>[qubit, qubit] -> [qubit, qubit]"-->108
+    end
